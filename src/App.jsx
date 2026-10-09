@@ -8,7 +8,7 @@ const lim = v => (+v > 0 ? +v : Infinity) // blank / 0 = no limit
 const api = async body => {
   const r = await fetch('/api/deriv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   const j = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(JSON.stringify(j).slice(0, 250))
+  if (!r.ok) throw new Error(r.status + ' ' + JSON.stringify(j).slice(0, 250))
   return j
 }
 const norm = a => ({ id: a.account_id || a.id || a.loginid, demo: /demo|virtual/i.test(JSON.stringify(a)), bal: a.balance, cur: a.currency })
@@ -121,6 +121,7 @@ export default function App() {
   const [streaks, setStreaks] = useState([])
   const [hit, setHit] = useState(false)
   const [menu, setMenu] = useState(false)   // account dropdown
+  const [fail, setFail] = useState(false) // connection/login problem -> show Retry
   const [vis, setVis] = useState(60) // how many ticks the chart shows (zoom)
   const onZoom = useCallback(dir => setVis(v => Math.min(280, Math.max(12, Math.round(v * (dir > 0 ? 1.25 : 0.8))))), [])
   const onReset = useCallback(() => setVis(60), [])
@@ -140,6 +141,17 @@ export default function App() {
     send({ proposal: 1, subscribe: 1, amount: +c.stake, basis: 'stake', contract_type: 'ACCU', currency: r.cur || 'USD', growth_rate: +c.growth, underlying_symbol: c.symbol })
   }
   // forget the old proposal stream (by id) and WAIT for the reply before opening a new one
+  const withRetry = async (fn, label, tries = 4) => { // retry only on Deriv 5xx / network errors
+    for (let i = 0; ; i++) {
+      try { return await fn() } catch (e) {
+        const msg = String(e.message || e)
+        if (!(/^5\d\d/.test(msg) || /Failed to fetch|NetworkError/i.test(msg)) || i >= tries - 1) throw e
+        addLog(`⏳ Deriv busy (${label}) — retry ${i + 1}/${tries - 1} in ${2 * 2 ** i}s`)
+        await new Promise(res => setTimeout(res, 2000 * 2 ** i))
+      }
+    }
+  }
+  const reqTicks = () => { const c = C.current, r = R.current; r.tickSym = c.symbol; r.tickReqAt = Date.now(); send({ ticks: c.symbol, subscribe: 1 }) }
   const flashRed = () => { const r = R.current; setHit(true); clearTimeout(r.ft); r.ft = setTimeout(() => setHit(false), 1000) }
   const addMark = (t, kind) => setMarks(ms => [...ms, { t, kind }].slice(-40))
   const subProposal = () => {
@@ -153,9 +165,16 @@ export default function App() {
   }
   const subscribe = () => {
     const c = C.current, r = R.current
-    send({ forget_all: 'ticks' })
-    r.since = 999; r.lastStay = null; r.hist = []; setTicks([]); setMarks([]); setStreaks([])
-    send({ ticks: c.symbol, subscribe: 1 })
+    const key = `${c.symbol}|${c.growth}|${c.stake}`
+    if (r.subKey === key) return // nothing changed -> don't spam Deriv (rate limits)
+    r.subKey = key
+    if (r.tickSym !== c.symbol) { // market changed (or first connect): swap the tick stream
+      r.since = 999; r.lastStay = null; r.hist = []; setTicks([]); setMarks([]); setStreaks([])
+      if (r.ftick) { /* a forget is already in flight; its reply requests the latest symbol */ }
+      else if (r.tickSub) { r.ftick = r.tickSub; r.tickSub = null; send({ forget: r.ftick }) }
+      else if (r.tickSym) { r.ftick = 'all'; send({ forget_all: 'ticks' }) } // old stream's id unknown
+      else reqTicks()
+    }
     subProposal()
   }
 
@@ -206,6 +225,8 @@ export default function App() {
     if (m.error) {
       if (/not found among your open/i.test(m.error.message || '')) return // contract already closed; harmless
       if (!/already subscribed/i.test(m.error.message || '')) addLog('❌ ' + (m.error.message || JSON.stringify(m.error)))
+      if (m.echo_req?.forget && m.echo_req.forget === r.ftick) { r.ftick = null; reqTicks(); return }
+      if (m.echo_req?.ticks && /already subscribed/i.test(m.error.message || '')) { r.tickSub = null; send({ forget_all: 'ticks' }); return }
       if (m.echo_req?.proposal) { // the proposal request itself failed
         r.reqPending = false
         if (/already subscribed/i.test(m.error.message || '')) { r.subId = null; r.pendingSub = true; send({ forget_all: 'proposal' }) }
@@ -217,7 +238,13 @@ export default function App() {
       return
     }
     switch (m.msg_type) {
-      case 'tick': onTick(m.tick.quote, m.tick.epoch); break
+      case 'tick': {
+        const ts = m.echo_req?.ticks || m.tick.symbol || m.tick.underlying_symbol
+        if (ts && ts !== C.current.symbol) break // late tick from the previous market
+        if (m.subscription?.id) r.tickSub = m.subscription.id
+        r.lastTickAt = Date.now()
+        onTick(m.tick.quote, m.tick.epoch); break
+      }
       case 'balance': setBalance(`${m.balance.balance} ${m.balance.currency}`); r.cur = m.balance.currency; break
       case 'proposal': {
         const d = m.proposal.contract_details || {}
@@ -238,7 +265,10 @@ export default function App() {
       }
       case 'buy': addMark(m.buy.start_time || r.lastT, 'buy'); r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
         send({ proposal_open_contract: 1, contract_id: m.buy.contract_id, subscribe: 1 }); break
-      case 'forget': case 'forget_all': if (r.pendingSub) reqProposal(); break
+      case 'forget': case 'forget_all':
+        if (m.echo_req?.forget_all === 'ticks' || (m.echo_req?.forget && m.echo_req.forget === r.ftick)) { r.ftick = null; reqTicks(); break }
+        if (r.pendingSub) reqProposal()
+        break
       case 'proposal_open_contract': onPoc(m.proposal_open_contract); break
       default:
     }
@@ -246,20 +276,24 @@ export default function App() {
 
   const connect = (url, trading) => {
     const r = R.current
-    r.url = url; r.trading = trading; r.subId = null; r.pendingSub = false; r.reqPending = false; r.redo = false; r.pid = null; r.bar = null
+    r.url = url; r.trading = trading; r.subKey = null; r.tickSub = null; r.tickSym = null; r.ftick = null; r.connAt = Date.now(); r.lastTickAt = 0; r.subId = null; r.pendingSub = false; r.reqPending = false; r.redo = false; r.pid = null; r.bar = null
     const old = ws.current; ws.current = null; old?.close()
     const s = new WebSocket(url); ws.current = s
     s.onopen = () => {
       addLog(trading ? 'Connected (trading)' : 'Connected (market data)')
+      r.retry = 0; if (trading) setFail(false)
       subscribe()
       if (trading) send({ balance: 1, subscribe: 1 })
     }
     s.onmessage = onMsg
     s.onclose = () => {
       if (ws.current !== s) return
-      addLog('Disconnected — reconnecting…')
-      if (!trading) setTimeout(() => ws.current === s && connect(PUB, false), 2000)
-      else { r.trading = false; setRun(false) }
+      if (!trading) {
+        r.retry = (r.retry || 0) + 1
+        const d = Math.min(2000 * 2 ** (r.retry - 1), 30000) // back off: 2s, 4s, 8s ... 30s
+        addLog(`Disconnected — reconnecting in ${d / 1000}s…`)
+        setTimeout(() => ws.current === s && connect(PUB, false), d)
+      } else { r.trading = false; setRun(false); setFail(true); addLog('⚠️ Trading connection lost — press Retry') }
     }
     s.onerror = () => addLog('Socket error')
   }
@@ -267,7 +301,11 @@ export default function App() {
   useEffect(() => {
     connect(PUB, false)
     const ping = setInterval(() => send({ ping: 1 }), 30000)
-    return () => { clearInterval(ping); const s = ws.current; ws.current = null; s?.close() }
+    const wd = setInterval(() => { // tick stream silent for 15s -> ask again (once per 15s)
+      const r = R.current, now = Date.now()
+      if (ws.current?.readyState === 1 && !r.ftick && r.tickSym && now - Math.max(r.lastTickAt || 0, r.connAt || 0) > 15000 && now - (r.tickReqAt || 0) > 15000) reqTicks()
+    }, 5000)
+    return () => { clearInterval(ping); clearInterval(wd); const s = ws.current; ws.current = null; s?.close() }
   }, [])
 
   // ---- OAuth (PKCE) ----
@@ -286,21 +324,27 @@ export default function App() {
   const useAccount = async (a, tok) => {
     try {
       setAcct(a); setRun(false); setBalance(null)
-      const j = await api({ action: 'otp', token: tok, accountId: a.id })
+      const j = await withRetry(() => api({ action: 'otp', token: tok, accountId: a.id }), 'account')
       const url = j.data?.url
       if (!url) throw new Error('OTP url nehe: ' + JSON.stringify(j).slice(0, 200))
       R.current.cur = a.cur
       connect(url, true)
-    } catch (e) { addLog('❌ ' + e.message) }
+    } catch (e) { addLog('❌ ' + e.message); setFail(true) }
   }
+  const retryNow = () => { setFail(false); const t = sessionStorage.getItem('tok'); if (!t) return; accts.length ? useAccount(acct || accts[0], t) : loadAccounts(t) }
   const loadAccounts = async tok => {
     try {
-      const j = await api({ action: 'accounts', token: tok })
+      const j = await withRetry(() => api({ action: 'accounts', token: tok }), 'accounts')
       const list = (Array.isArray(j.data) ? j.data : j.data?.accounts || j.accounts || []).map(norm).filter(a => a.id)
       if (!list.length) return addLog('❌ Accounts nehe: ' + JSON.stringify(j).slice(0, 250))
       setAccts(list)
       useAccount(list.find(a => a.demo) || list[0], tok) // demo first = safer
-    } catch (e) { addLog('❌ ' + e.message); sessionStorage.removeItem('tok') }
+    } catch (e) {
+      const msg = String(e.message || e)
+      if (/^40[13]/.test(msg)) { sessionStorage.removeItem('tok'); addLog('❌ Login expired — please log in again') }
+      else addLog('❌ Deriv unavailable (' + msg.slice(0, 90) + ') — press Retry')
+      setFail(true)
+    }
   }
   useEffect(() => {
     const p = new URLSearchParams(window.location.search), code = p.get('code')
@@ -309,9 +353,9 @@ export default function App() {
       const saved = JSON.parse(sessionStorage.getItem('pkce') || '{}')
       window.history.replaceState({}, '', window.location.pathname)
       if (p.get('state') !== saved.state) return addLog('❌ State mismatch, login again')
-      api({ action: 'token', code, verifier: saved.v, redirect_uri: redirectUri() })
+      withRetry(() => api({ action: 'token', code, verifier: saved.v, redirect_uri: redirectUri() }), 'login')
         .then(j => { sessionStorage.setItem('tok', j.access_token); loadAccounts(j.access_token) })
-        .catch(e => addLog('❌ Token: ' + e.message))
+        .catch(e => { addLog('❌ Login failed: ' + String(e.message).slice(0, 120) + ' — please log in again'); setFail(true) })
     } else {
       const t = sessionStorage.getItem('tok'); if (t) loadAccounts(t)
     }
@@ -342,7 +386,7 @@ export default function App() {
             </>
           ) : (
             <>
-              <div className="acctwrap">
+              {acct ? <div className="acctwrap">
                 <button className="acct" onClick={() => setMenu(m => !m)}>
                   <span className="acctin">
                     <span className={'alab ' + (live ? 'real' : 'demo')}>{live ? 'Real account' : 'Demo account'}</span>
@@ -361,7 +405,8 @@ export default function App() {
                     ))}
                   </div>
                 )}
-              </div>
+              </div> : <span className="conn">Connecting…</span>}
+              {fail && <button className="pill" onClick={retryNow}>⟳ Retry</button>}
               <button className="pill" onClick={logout}>Log out</button>
             </>
           )}

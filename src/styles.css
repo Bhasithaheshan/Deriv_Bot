@@ -42,3 +42,4 @@ input,select{width:100%;padding:9px;background:#0e1116;color:#fff;border:1px sol
 .pgrid .full{grid-column:1/-1}
 .pgrid select,.pgrid input{min-width:0}
 @media(max-width:420px){.pgrid{grid-template-columns:1fr}}
+.conn{color:#8b95a5;font-size:14px}
