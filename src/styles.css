@@ -14,7 +14,7 @@ body{margin:0;background:#0e1116;color:#e6e6e6;font-family:system-ui,sans-serif}
 .menu{position:absolute;right:0;z-index:30;top:calc(100% + 6px);min-width:260px;background:#181c24;border:1px solid #2a303a;border-radius:10px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .mi{display:flex;gap:10px;justify-content:space-between;width:100%;margin:0;padding:10px 12px;border:0;border-radius:8px;background:transparent;color:#e6e6e6;cursor:pointer;font-size:14px;text-align:left}
 .mi:hover,.mi.sel{background:#232a35}.mi .demo{color:#f5a623}.mi .real{color:#0bb184}
-.wrap{display:grid;grid-template-columns:1fr 340px;gap:16px;padding:16px;max-width:1200px;margin:auto}
+.wrap{display:grid;grid-template-columns:1fr 420px;gap:16px;padding:16px;max-width:1200px;margin:auto}
 @media(max-width:850px){.wrap{grid-template-columns:1fr}}
 .card{background:#171b22;border:1px solid #262c36;border-radius:10px;padding:14px}
 label{display:block;font-size:12px;color:#8b95a5;margin:10px 0 4px}
@@ -37,3 +37,8 @@ input,select{width:100%;padding:9px;background:#0e1116;color:#fff;border:1px sol
 .blogo{height:52px;width:auto;display:block}
 .by{font-weight:700;font-size:16px;color:#e6e8eb;white-space:nowrap}
 @media(max-width:600px){.blogo{height:36px}.by{font-size:12px}.pill{padding:0 14px;font-size:14px;height:40px}}
+
+.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.pgrid .full{grid-column:1/-1}
+.pgrid select,.pgrid input{min-width:0}
+@media(max-width:420px){.pgrid{grid-template-columns:1fr}}

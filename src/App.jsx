@@ -4,6 +4,7 @@ const PUB = 'wss://api.derivws.com/trading/v1/options/ws/public' // market data,
 const APP_ID = import.meta.env.VITE_DERIV_APP_ID
 const redirectUri = () => window.location.origin + '/'
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+const lim = v => (+v > 0 ? +v : Infinity) // blank / 0 = no limit
 const api = async body => {
   const r = await fetch('/api/deriv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   const j = await r.json().catch(() => ({}))
@@ -108,7 +109,7 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
 }
 
 export default function App() {
-  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxTrades: 20 })
+  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5 })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
   const [bar, setBar] = useState(null)
@@ -185,7 +186,7 @@ export default function App() {
   }
   const maybeEnter = () => {
     const r = R.current, c = C.current
-    if (RUN.current && r.trading && !r.open && !r.busy && r.pnl > -c.maxLoss && r.n < c.maxTrades && r.since === +c.wait) buy()
+    if (RUN.current && r.trading && !r.open && !r.busy && r.pnl > -lim(c.maxLoss) && r.pnl < lim(c.maxProfit) && r.since === +c.wait) buy()
   }
   const onPoc = p => {
     const r = R.current, c = C.current
@@ -195,7 +196,8 @@ export default function App() {
       setStats({ n: r.n, pnl: r.pnl })
       addMark(p.sell_time || r.lastT, p.profit >= 0 ? 'win' : 'loss')
       addLog(`${p.profit >= 0 ? '✅ WIN' : '🔴 LOSS'}  ${(+p.profit).toFixed(2)}`)
-      if (r.pnl <= -c.maxLoss || r.n >= c.maxTrades) { setRun(false); addLog('⏹ Limit reached — bot stopped') }
+      if (r.pnl >= lim(c.maxProfit)) { setRun(false); addLog(`🎯 Profit target reached (+${r.pnl.toFixed(2)}) — bot stopped`) }
+      else if (r.pnl <= -lim(c.maxLoss)) { setRun(false); addLog(`⛔ Loss limit reached (${r.pnl.toFixed(2)}) — bot stopped`) }
       return
     }
   }
@@ -380,19 +382,25 @@ export default function App() {
           <div className="log">{log.map((l, i) => <div key={i}>{l}</div>)}</div>
         </div>
         <div className="card">
-          <label>Market</label>
-          <select value={cfg.symbol} onChange={set('symbol')}>{Object.entries(MARKETS).map(([n, sy]) => <option key={sy} value={sy}>{n}</option>)}</select>
-          <label>Growth rate</label>
-          <select value={cfg.growth} onChange={set('growth')}>{[1, 2, 3, 4, 5].map(g => <option key={g} value={g / 100}>{g}%</option>)}</select>
-          <label>Target ticks (auto-sell after N ticks)</label>
-          <select value={cfg.target} onChange={set('target')}>{[1, 2, 3, 4, 5].map(t => <option key={t}>{t}</option>)}</select>
-          <label>Strategy: enter after barrier hit + wait N ticks (0 = immediately)</label>
-          <select value={cfg.wait} onChange={set('wait')}>{[0, 1, 2, 3, 5, 8].map(t => <option key={t}>{t}</option>)}</select>
-          <label>Stake</label><input type="number" min="1" value={cfg.stake} onChange={set('stake')} />
-          <label>Stop after total loss of</label><input type="number" value={cfg.maxLoss} onChange={set('maxLoss')} />
-          <label>Max trades</label><input type="number" value={cfg.maxTrades} onChange={set('maxTrades')} />
+          <div className="pgrid">
+            <div><label>Market</label>
+              <select value={cfg.symbol} onChange={set('symbol')}>{Object.entries(MARKETS).map(([n, sy]) => <option key={sy} value={sy}>{n}</option>)}</select></div>
+            <div><label>Growth rate</label>
+              <select value={cfg.growth} onChange={set('growth')}>{[1, 2, 3, 4, 5].map(g => <option key={g} value={g / 100}>{g}%</option>)}</select></div>
+            <div><label>Stake (USD)</label><input type="number" min="1" value={cfg.stake} onChange={set('stake')} /></div>
+            <div><label>Target ticks (1-5)</label>
+              <select value={cfg.target} onChange={set('target')}>{[1, 2, 3, 4, 5].map(t => <option key={t}>{t}</option>)}</select></div>
+            <div><label>Stop after total loss (USD)</label><input type="number" min="0" value={cfg.maxLoss} onChange={set('maxLoss')} /></div>
+            <div><label>Stop at profit (USD)</label><input type="number" min="0" value={cfg.maxProfit} onChange={set('maxProfit')} /></div>
+            <div className="full"><label>Strategy: enter after barrier hit + wait N ticks (0 = immediately)</label>
+              <select value={cfg.wait} onChange={set('wait')}>{[0, 1, 2, 3, 5, 8].map(t => <option key={t}>{t}</option>)}</select></div>
+          </div>
           <button className={'cta' + (run ? ' stop' : '')} disabled={!trading}
-            onClick={() => { if (!run && live && !confirm('REAL account! Start auto trading?')) return; setRun(!run) }}>
+            onClick={() => {
+              if (!run && live && !confirm('REAL account! Start auto trading?')) return
+              if (!run) { R.current.pnl = 0; R.current.n = 0; setStats({ n: 0, pnl: 0 }) } // fresh P/L for each run
+              setRun(!run)
+            }}>
             {run ? 'Stop bot' : tok ? 'Start bot' : 'Log in to start'}
           </button>
         </div>
