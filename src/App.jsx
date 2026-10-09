@@ -49,7 +49,7 @@ export default function App() {
     send({ forget_all: ['ticks', 'proposal'] })
     r.since = 999; r.bar = null; r.pid = null; setTicks([]); setBar(null)
     send({ ticks: c.symbol, subscribe: 1 })
-    send({ proposal: 1, subscribe: 1, amount: +c.stake, basis: 'stake', contract_type: 'ACCU', currency: r.cur || 'USD', growth_rate: +c.growth, symbol: c.symbol })
+    send({ proposal: 1, subscribe: 1, amount: +c.stake, basis: 'stake', contract_type: 'ACCU', currency: r.cur || 'USD', growth_rate: +c.growth, underlying_symbol: c.symbol })
   }
 
   const buy = () => {
