@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 const PUB = 'wss://api.derivws.com/trading/v1/options/ws/public' // market data, no login needed
 const APP_ID = import.meta.env.VITE_DERIV_APP_ID
@@ -13,66 +13,97 @@ const api = async body => {
 const norm = a => ({ id: a.account_id || a.id || a.loginid, demo: /demo|virtual/i.test(JSON.stringify(a)), bal: a.balance, cur: a.currency })
 const MARKETS = { 'Volatility 10 Index': 'R_10', 'Volatility 25 Index': 'R_25', 'Volatility 50 Index': 'R_50', 'Volatility 75 Index': 'R_75', 'Volatility 100 Index': 'R_100' }
 
-function Chart({ ticks, bar, hit, marks }) {
-  const W = 900, H = 400, L = 8, RP = 86, T = 16, B = 26
-  if (ticks.length < 2) return <div className="chart" style={{ height: 300 }} />
-  const vals = ticks.map(t => t.q).concat(bar ? [bar.high, bar.low] : [])
-  let mn = Math.min(...vals), mx = Math.max(...vals)
-  const pad = (mx - mn || 1) * 0.08; mn -= pad; mx += pad
-  const pw = W - RP, xl = L + (pw - L) * 0.8 // leave empty space on the right like Deriv
-  const y = v => T + ((mx - v) / (mx - mn)) * (H - T - B)
-  const n = ticks.length
-  const x = i => L + (i / (n - 1)) * (xl - L)
-  const last = ticks[n - 1]
-  const pts = ticks.map((t, i) => `${x(i)},${y(t.q)}`).join(' ')
-  const grid = [0, 1, 2, 3, 4].map(k => mn + ((mx - mn) * k) / 4)
-  const tIdx = [0, 0.25, 0.5, 0.75, 1].map(f => Math.round(f * (n - 1)))
-  const fmt = e => new Date(e * 1000).toLocaleTimeString([], { hour12: false })
-  const Box = ({ yy, text, bg, fg }) => (
-    <g>
-      <rect x={pw + 4} y={yy - 10} width={RP - 8} height={20} rx={4} fill={bg} />
-      <text x={pw + 4 + (RP - 8) / 2} y={yy + 4} textAnchor="middle" fontSize="12" fontWeight="600" fill={fg}>{text}</text>
-    </g>
-  )
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="chart">
-      <defs>
-        <linearGradient id="fillg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#fff" stopOpacity=".16" /><stop offset="100%" stopColor="#fff" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {grid.map((g, i) => (
-        <g key={i}>
-          <line x1="0" x2={pw} y1={y(g)} y2={y(g)} stroke="#1f2630" />
-          <text x={pw + 10} y={y(g) + 4} fontSize="11" fill="#5d6878">{g.toFixed(2)}</text>
+function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
+  const ref = useRef(null)
+  useEffect(() => { // mouse-wheel zoom (scroll down = zoom out)
+    const el = ref.current; if (!el) return
+    const f = e => { e.preventDefault(); onZoom(e.deltaY > 0 ? 1 : -1) }
+    el.addEventListener('wheel', f, { passive: false })
+    return () => el.removeEventListener('wheel', f)
+  }, [onZoom])
+  const ticks = all.slice(-vis)
+
+  const draw = () => {
+    const W = 900, H = 400, L = 8, RP = 86, T = 16, B = 26
+    const vals = ticks.map(t => t.q).concat(bar ? [bar.high, bar.low] : [])
+    let mn = Math.min(...vals), mx = Math.max(...vals)
+    const pad = (mx - mn || 1) * 0.08; mn -= pad; mx += pad
+    const m = Math.max(1, Math.sqrt(vis / 60)) // zooming out also widens the price scale
+    const c = (mn + mx) / 2, half = ((mx - mn) / 2) * m; mn = c - half; mx = c + half
+    const pw = W - RP, xl = L + (pw - L) * 0.8
+    const y = v => T + ((mx - v) / (mx - mn)) * (H - T - B)
+    const n = ticks.length
+    const x = i => L + (i / (n - 1)) * (xl - L)
+    const last = ticks[n - 1]
+    const pts = ticks.map((t, i) => `${x(i)},${y(t.q)}`).join(' ')
+    // "nice" round price levels (1 / 2 / 5 x 10^k)
+    const raw = (mx - mn) / 5, pow = 10 ** Math.floor(Math.log10(raw)), f = raw / pow
+    const step = (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * pow
+    const dec = Math.max(2, Math.ceil(-Math.log10(step)) + 1)
+    const first = Math.ceil(mn / step), grid = []
+    for (let k = first; k * step <= mx; k++) grid.push(k * step)
+    const tIdx = [0, 0.25, 0.5, 0.75, 1].map(fr => Math.round(fr * (n - 1)))
+    const fmt = e => new Date(e * 1000).toLocaleTimeString([], { hour12: false })
+    const Box = ({ yy, text, bg, fg }) => (
+      <g>
+        <rect x={pw + 4} y={yy - 10} width={RP - 8} height={20} rx={4} fill={bg} />
+        <text x={pw + 4 + (RP - 8) / 2} y={yy + 4} textAnchor="middle" fontSize="12" fontWeight="600" fill={fg}>{text}</text>
+      </g>
+    )
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} className="chart">
+        <defs>
+          <linearGradient id="fillg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#fff" stopOpacity=".16" /><stop offset="100%" stopColor="#fff" stopOpacity="0" />
+          </linearGradient>
+          <clipPath id="plot"><rect x="0" y="0" width={pw} height={H - B} /></clipPath>
+        </defs>
+        {grid.map((g, i) => (
+          <g key={i}>
+            <line x1="0" x2={pw} y1={y(g)} y2={y(g)} stroke="#1f2630" />
+            <text x={pw + 10} y={y(g) + 4} fontSize="11" fill="#5d6878">{g.toFixed(dec)}</text>
+          </g>
+        ))}
+        {tIdx.map((i, k) => (
+          <text key={k} x={Math.min(Math.max(x(i), 30), pw - 30)} y={H - 8} textAnchor="middle" fontSize="11" fill="#5d6878">{fmt(ticks[i].t)}</text>
+        ))}
+        <g clipPath="url(#plot)">
+          {bar && <>
+            <rect x="0" y={y(bar.high)} width={pw} height={Math.max(y(bar.low) - y(bar.high), 1)} fill={hit ? 'rgba(255,60,60,.22)' : 'rgba(0,200,90,.14)'} />
+            <line x1="0" x2={pw} y1={y(bar.high)} y2={y(bar.high)} stroke={hit ? '#ff4d4d' : '#12b54f'} strokeWidth={hit ? 2 : 1} />
+            <line x1="0" x2={pw} y1={y(bar.low)} y2={y(bar.low)} stroke={hit ? '#ff4d4d' : '#12b54f'} strokeWidth={hit ? 2 : 1} />
+          </>}
+          <polygon points={`${x(0)},${H - B} ${pts} ${x(n - 1)},${H - B}`} fill="url(#fillg)" />
+          <polyline fill="none" stroke="#e8eef5" strokeWidth="1.6" strokeLinejoin="round" points={pts} />
+          <line x1={x(n - 1)} x2={pw} y1={y(last.q)} y2={y(last.q)} stroke="#cfd8dc" strokeWidth="1.4" />
+          <circle cx={x(n - 1)} cy={y(last.q)} r="9" fill="rgba(255,255,255,.18)" />
+          <circle cx={x(n - 1)} cy={y(last.q)} r="4" fill="#fff" />
+          {marks.map((mk, k) => {
+            if (mk.t < ticks[0].t - 1) return null
+            const i = ticks.findIndex(t => t.t >= mk.t - 0.5)
+            if (i < 0) return null
+            const cx = x(i), cy = y(ticks[i].q)
+            return mk.kind === 'buy'
+              ? <circle key={k} cx={cx} cy={cy} r="6" fill="#1fd15a" stroke="#fff" strokeWidth="2" />
+              : <circle key={k} cx={cx} cy={cy} r="6" fill="none" stroke={mk.kind === 'win' ? '#1fd15a' : '#ff4d4d'} strokeWidth="2.5" />
+          })}
         </g>
-      ))}
-      {tIdx.map((i, k) => (
-        <text key={k} x={Math.min(Math.max(x(i), 30), pw - 30)} y={H - 8} textAnchor="middle" fontSize="11" fill="#5d6878">{fmt(ticks[i].t)}</text>
-      ))}
-      {bar && <>
-        <rect x="0" y={y(bar.high)} width={pw} height={Math.max(y(bar.low) - y(bar.high), 1)} fill={hit ? 'rgba(255,60,60,.22)' : 'rgba(0,200,90,.14)'} />
-        <line x1="0" x2={pw} y1={y(bar.high)} y2={y(bar.high)} stroke={hit ? '#ff4d4d' : '#12b54f'} strokeWidth={hit ? 2 : 1} />
-        <line x1="0" x2={pw} y1={y(bar.low)} y2={y(bar.low)} stroke={hit ? '#ff4d4d' : '#12b54f'} strokeWidth={hit ? 2 : 1} />
-      </>}
-      <polygon points={`${x(0)},${H - B} ${pts} ${x(n - 1)},${H - B}`} fill="url(#fillg)" />
-      <polyline fill="none" stroke="#e8eef5" strokeWidth="1.6" strokeLinejoin="round" points={pts} />
-      <line x1={x(n - 1)} x2={pw} y1={y(last.q)} y2={y(last.q)} stroke="#cfd8dc" strokeWidth="1.4" />
-      <circle cx={x(n - 1)} cy={y(last.q)} r="9" fill="rgba(255,255,255,.18)" />
-      <circle cx={x(n - 1)} cy={y(last.q)} r="4" fill="#fff" />
-      {marks.map((m, k) => {
-        if (m.t < ticks[0].t - 1) return null
-        const i = ticks.findIndex(t => t.t >= m.t - 0.5)
-        if (i < 0) return null
-        const cx = x(i), cy = y(ticks[i].q)
-        return m.kind === 'buy'
-          ? <circle key={k} cx={cx} cy={cy} r="6" fill="#1fd15a" stroke="#fff" strokeWidth="2" />
-          : <circle key={k} cx={cx} cy={cy} r="6" fill="none" stroke={m.kind === 'win' ? '#1fd15a' : '#ff4d4d'} strokeWidth="2.5" />
-      })}
-      {bar && <Box yy={y(bar.high)} text={bar.high.toFixed(3)} bg="#2a9df4" fg="#fff" />}
-      {bar && <Box yy={y(bar.low)} text={bar.low.toFixed(3)} bg="#2a9df4" fg="#fff" />}
-      <Box yy={y(last.q)} text={last.q.toFixed(2)} bg="#fff" fg="#111" />
-    </svg>
+        {bar && <Box yy={Math.min(Math.max(y(bar.high), 12), H - B - 12)} text={bar.high.toFixed(3)} bg="#2a9df4" fg="#fff" />}
+        {bar && <Box yy={Math.min(Math.max(y(bar.low), 12), H - B - 12)} text={bar.low.toFixed(3)} bg="#2a9df4" fg="#fff" />}
+        <Box yy={Math.min(Math.max(y(last.q), 12), H - B - 12)} text={last.q.toFixed(2)} bg="#fff" fg="#111" />
+      </svg>
+    )
+  }
+
+  return (
+    <div className="chartwrap" ref={ref}>
+      {ticks.length < 2 ? <div className="chart" style={{ height: 300 }} /> : draw()}
+      <div className="zoom">
+        <button className="zbtn" onClick={() => onZoom(1)} title="Zoom out">−</button>
+        <button className="zbtn" onClick={onReset} title="Reset zoom">◎</button>
+        <button className="zbtn" onClick={() => onZoom(-1)} title="Zoom in">+</button>
+      </div>
+    </div>
   )
 }
 
@@ -88,6 +119,9 @@ export default function App() {
   const [stats, setStats] = useState({ n: 0, pnl: 0 })
   const [streaks, setStreaks] = useState([])
   const [hit, setHit] = useState(false)
+  const [vis, setVis] = useState(60) // how many ticks the chart shows (zoom)
+  const onZoom = useCallback(dir => setVis(v => Math.min(280, Math.max(12, Math.round(v * (dir > 0 ? 1.25 : 0.8))))), [])
+  const onReset = useCallback(() => setVis(60), [])
   const [marks, setMarks] = useState([])
   const ws = useRef(null)
   const R = useRef({ pnl: 0, n: 0, since: 999 })
@@ -133,7 +167,7 @@ export default function App() {
   }
   const onTick = (q, epoch) => {
     const r = R.current, c = C.current
-    setTicks(t => [...t.slice(-79), { q, t: epoch || Date.now() / 1000 }])
+    setTicks(t => [...t.slice(-299), { q, t: epoch || Date.now() / 1000 }])
     r.lastT = epoch || Date.now() / 1000
     if (r.bar && Date.now() - (r.propAt || 0) < 5000 && (q >= r.bar.high || q <= r.bar.low)) flashRed()
     if (r.open) { // contract running: count ticks ourselves, sell after entry tick + target ticks
@@ -294,7 +328,7 @@ export default function App() {
     <div className="wrap">
       <div className="card">
         <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.q.toFixed(2)}</span></div>
-        <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} />
+        <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} vis={vis} onZoom={onZoom} onReset={onReset} />
         <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
           <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b></span></div>
         {streaks.length > 0 && (
