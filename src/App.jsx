@@ -44,11 +44,17 @@ export default function App() {
   const send = o => ws.current?.readyState === 1 && ws.current.send(JSON.stringify(o))
   const addLog = t => setLog(l => [new Date().toLocaleTimeString() + '  ' + t, ...l].slice(0, 60))
 
-  const subProposal = () => {
+  const reqProposal = () => {
     const c = C.current, r = R.current
-    send({ forget_all: 'proposal' })
-    r.pid = null; r.bar = null; setBar(null)
+    r.pendingSub = false; r.reqAt = Date.now()
     send({ proposal: 1, subscribe: 1, amount: +c.stake, basis: 'stake', contract_type: 'ACCU', currency: r.cur || 'USD', growth_rate: +c.growth, underlying_symbol: c.symbol })
+  }
+  // forget the old proposal stream (by id) and WAIT for the reply before opening a new one
+  const subProposal = () => {
+    const r = R.current
+    r.pid = null; r.bar = null; setBar(null); r.reqAt = Date.now()
+    if (r.subId) { const id = r.subId; r.subId = null; r.pendingSub = true; send({ forget: id }) }
+    else reqProposal()
   }
   const subscribe = () => {
     const c = C.current, r = R.current
@@ -60,7 +66,7 @@ export default function App() {
 
   const buy = () => {
     const r = R.current
-    if (!r.pid || r.open || !r.trading) return
+    if (!r.pid || r.open || !r.trading || Date.now() - (r.propAt || 0) > 2000) { r.busy = false; return }
     r.busy = true; r.selling = false
     send({ buy: r.pid, price: +C.current.stake })
     r.pid = null // a bought proposal id is single-use
@@ -73,7 +79,9 @@ export default function App() {
       if (r.inTicks >= +c.target + 1 && !r.selling) { r.selling = true; send({ sell: r.open, price: 0 }) }
       return
     }
-    if (r.bar && (q >= r.bar.high || q <= r.bar.low)) r.since = 0 // barrier hit
+    const now = Date.now()
+    if (now - (r.propAt || 0) > 3000 && now - (r.reqAt || 0) > 3000) subProposal() // self-heal dead proposal stream
+    if (r.bar && now - (r.propAt || 0) < 3000 && (q >= r.bar.high || q <= r.bar.low)) r.since = 0 // barrier hit
     else r.since = Math.min(r.since + 1, 999)
     const ok = RUN.current && r.trading && !r.open && !r.busy && r.pnl > -c.maxLoss && r.n < c.maxTrades
     if (ok && r.since === +c.wait) setTimeout(buy, 400) // let the fresh proposal arrive
@@ -93,6 +101,7 @@ export default function App() {
     const m = JSON.parse(e.data), r = R.current
     if (m.error) {
       addLog('❌ ' + (m.error.message || JSON.stringify(m.error)))
+      if (r.pendingSub) { reqProposal(); return }
       if (r.open) r.selling = false // retry sell on next tick
       else if (r.busy) { r.busy = false; subProposal() } // buy failed -> fresh proposal
       return
@@ -102,12 +111,13 @@ export default function App() {
       case 'balance': setBalance(`${m.balance.balance} ${m.balance.currency}`); r.cur = m.balance.currency; break
       case 'proposal': {
         const d = m.proposal.contract_details || {}
-        r.pid = m.proposal.id
+        r.pid = m.proposal.id; r.subId = m.subscription?.id || r.subId; r.propAt = Date.now()
         if (d.high_barrier) { r.bar = { high: +d.high_barrier, low: +d.low_barrier }; setBar(r.bar) }
         break
       }
       case 'buy': r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
         send({ proposal_open_contract: 1, contract_id: m.buy.contract_id, subscribe: 1 }); break
+      case 'forget': if (r.pendingSub) reqProposal(); break
       case 'proposal_open_contract': onPoc(m.proposal_open_contract); break
       default:
     }
@@ -115,7 +125,7 @@ export default function App() {
 
   const connect = (url, trading) => {
     const r = R.current
-    r.url = url; r.trading = trading
+    r.url = url; r.trading = trading; r.subId = null; r.pendingSub = false; r.pid = null; r.bar = null
     const old = ws.current; ws.current = null; old?.close()
     const s = new WebSocket(url); ws.current = s
     s.onopen = () => {
