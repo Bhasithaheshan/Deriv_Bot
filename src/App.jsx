@@ -44,12 +44,18 @@ export default function App() {
   const send = o => ws.current?.readyState === 1 && ws.current.send(JSON.stringify(o))
   const addLog = t => setLog(l => [new Date().toLocaleTimeString() + '  ' + t, ...l].slice(0, 60))
 
+  const subProposal = () => {
+    const c = C.current, r = R.current
+    send({ forget_all: 'proposal' })
+    r.pid = null; r.bar = null; setBar(null)
+    send({ proposal: 1, subscribe: 1, amount: +c.stake, basis: 'stake', contract_type: 'ACCU', currency: r.cur || 'USD', growth_rate: +c.growth, underlying_symbol: c.symbol })
+  }
   const subscribe = () => {
     const c = C.current, r = R.current
-    send({ forget_all: ['ticks', 'proposal'] })
-    r.since = 999; r.bar = null; r.pid = null; setTicks([]); setBar(null)
+    send({ forget_all: 'ticks' })
+    r.since = 999; setTicks([])
     send({ ticks: c.symbol, subscribe: 1 })
-    send({ proposal: 1, subscribe: 1, amount: +c.stake, basis: 'stake', contract_type: 'ACCU', currency: r.cur || 'USD', growth_rate: +c.growth, underlying_symbol: c.symbol })
+    subProposal()
   }
 
   const buy = () => {
@@ -57,10 +63,16 @@ export default function App() {
     if (!r.pid || r.open || !r.trading) return
     r.busy = true; r.selling = false
     send({ buy: r.pid, price: +C.current.stake })
+    r.pid = null // a bought proposal id is single-use
   }
   const onTick = q => {
     const r = R.current, c = C.current
     setTicks(t => [...t.slice(-79), q])
+    if (r.open) { // contract running: count ticks ourselves, sell after entry tick + target ticks
+      r.inTicks = (r.inTicks || 0) + 1
+      if (r.inTicks >= +c.target + 1 && !r.selling) { r.selling = true; send({ sell: r.open, price: 0 }) }
+      return
+    }
     if (r.bar && (q >= r.bar.high || q <= r.bar.low)) r.since = 0 // barrier hit
     else r.since = Math.min(r.since + 1, 999)
     const ok = RUN.current && r.trading && !r.open && !r.busy && r.pnl > -c.maxLoss && r.n < c.maxTrades
@@ -76,11 +88,15 @@ export default function App() {
       if (r.pnl <= -c.maxLoss || r.n >= c.maxTrades) { setRun(false); addLog('⏹ Limit reached — bot stopped') }
       return
     }
-    if (p.tick_count >= c.target && !r.selling) { r.selling = true; send({ sell: p.contract_id, price: 0 }) }
   }
   const onMsg = e => {
     const m = JSON.parse(e.data), r = R.current
-    if (m.error) { r.busy = false; addLog('❌ ' + (m.error.message || JSON.stringify(m.error))); return }
+    if (m.error) {
+      addLog('❌ ' + (m.error.message || JSON.stringify(m.error)))
+      if (r.open) r.selling = false // retry sell on next tick
+      else if (r.busy) { r.busy = false; subProposal() } // buy failed -> fresh proposal
+      return
+    }
     switch (m.msg_type) {
       case 'tick': onTick(m.tick.quote); break
       case 'balance': setBalance(`${m.balance.balance} ${m.balance.currency}`); r.cur = m.balance.currency; break
@@ -90,7 +106,7 @@ export default function App() {
         if (d.high_barrier) { r.bar = { high: +d.high_barrier, low: +d.low_barrier }; setBar(r.bar) }
         break
       }
-      case 'buy': r.open = m.buy.contract_id; r.busy = false; addLog(`🟢 Bought #${m.buy.contract_id}`)
+      case 'buy': r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
         send({ proposal_open_contract: 1, contract_id: m.buy.contract_id, subscribe: 1 }); break
       case 'proposal_open_contract': onPoc(m.proposal_open_contract); break
       default:
