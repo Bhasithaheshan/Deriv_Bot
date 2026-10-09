@@ -37,6 +37,7 @@ export default function App() {
   const [balance, setBalance] = useState(null)
   const [log, setLog] = useState([])
   const [stats, setStats] = useState({ n: 0, pnl: 0 })
+  const [streaks, setStreaks] = useState([])
   const ws = useRef(null)
   const R = useRef({ pnl: 0, n: 0, since: 999 })
   const C = useRef(cfg); C.current = cfg
@@ -81,10 +82,14 @@ export default function App() {
     }
     const now = Date.now()
     if (now - (r.propAt || 0) > 3000 && now - (r.reqAt || 0) > 3000) subProposal() // self-heal dead proposal stream
-    if (r.bar && now - (r.propAt || 0) < 3000 && (q >= r.bar.high || q <= r.bar.low)) r.since = 0 // barrier hit
+    if (r.hasStay) return // Deriv's own streak counter drives entries (see proposal handler)
+    if (r.bar && now - (r.propAt || 0) < 3000 && (q >= r.bar.high || q <= r.bar.low)) r.since = 0 // fallback detection
     else r.since = Math.min(r.since + 1, 999)
-    const ok = RUN.current && r.trading && !r.open && !r.busy && r.pnl > -c.maxLoss && r.n < c.maxTrades
-    if (ok && r.since === +c.wait) setTimeout(buy, 400) // let the fresh proposal arrive
+    if (r.since === +c.wait) setTimeout(maybeEnter, 400)
+  }
+  const maybeEnter = () => {
+    const r = R.current, c = C.current
+    if (RUN.current && r.trading && !r.open && !r.busy && r.pnl > -c.maxLoss && r.n < c.maxTrades && r.since === +c.wait) buy()
   }
   const onPoc = p => {
     const r = R.current, c = C.current
@@ -100,6 +105,7 @@ export default function App() {
   const onMsg = e => {
     const m = JSON.parse(e.data), r = R.current
     if (m.error) {
+      if (/not found among your open/i.test(m.error.message || '')) return // contract already closed; harmless
       addLog('❌ ' + (m.error.message || JSON.stringify(m.error)))
       if (r.pendingSub) { reqProposal(); return }
       if (r.open) r.selling = false // retry sell on next tick
@@ -113,6 +119,11 @@ export default function App() {
         const d = m.proposal.contract_details || {}
         r.pid = m.proposal.id; r.subId = m.subscription?.id || r.subId; r.propAt = Date.now()
         if (d.high_barrier) { r.bar = { high: +d.high_barrier, low: +d.low_barrier }; setBar(r.bar) }
+        // Deriv's own "ticks stayed in" list: [current streak, previous streaks...] (same numbers as DTrader)
+        if (Array.isArray(d.ticks_stayed_in) && d.ticks_stayed_in.length) {
+          r.hasStay = true; r.since = +d.ticks_stayed_in[0]; setStreaks(d.ticks_stayed_in.slice(0, 10))
+          maybeEnter() // proposal is fresh right now, so buy immediately
+        }
         break
       }
       case 'buy': r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
@@ -210,6 +221,7 @@ export default function App() {
         <Chart ticks={ticks} bar={bar} />
         <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
           <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b></span></div>
+        {streaks.length > 0 && <div className="row"><span>Deriv streaks:</span><span>{streaks.join(' · ')}</span></div>}
         <div className="log">{log.map((l, i) => <div key={i}>{l}</div>)}</div>
       </div>
       <div className="card">
