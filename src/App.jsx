@@ -13,7 +13,7 @@ const api = async body => {
 const norm = a => ({ id: a.account_id || a.id || a.loginid, demo: /demo|virtual/i.test(JSON.stringify(a)), bal: a.balance, cur: a.currency })
 const MARKETS = { 'Volatility 10 (1s)': '1HZ10V', 'Volatility 25 (1s)': '1HZ25V', 'Volatility 50 (1s)': '1HZ50V', 'Volatility 75 (1s)': '1HZ75V', 'Volatility 100 (1s)': '1HZ100V' }
 
-function Chart({ ticks, bar }) {
+function Chart({ ticks, bar, hit, marks }) {
   const W = 900, H = 400, L = 8, RP = 86, T = 16, B = 26
   if (ticks.length < 2) return <div className="chart" style={{ height: 300 }} />
   const vals = ticks.map(t => t.q).concat(bar ? [bar.high, bar.low] : [])
@@ -51,15 +51,24 @@ function Chart({ ticks, bar }) {
         <text key={k} x={Math.min(Math.max(x(i), 30), pw - 30)} y={H - 8} textAnchor="middle" fontSize="11" fill="#5d6878">{fmt(ticks[i].t)}</text>
       ))}
       {bar && <>
-        <rect x="0" y={y(bar.high)} width={pw} height={Math.max(y(bar.low) - y(bar.high), 1)} fill="rgba(0,200,90,.14)" />
-        <line x1="0" x2={pw} y1={y(bar.high)} y2={y(bar.high)} stroke="#12b54f" />
-        <line x1="0" x2={pw} y1={y(bar.low)} y2={y(bar.low)} stroke="#12b54f" />
+        <rect x="0" y={y(bar.high)} width={pw} height={Math.max(y(bar.low) - y(bar.high), 1)} fill={hit ? 'rgba(255,60,60,.22)' : 'rgba(0,200,90,.14)'} />
+        <line x1="0" x2={pw} y1={y(bar.high)} y2={y(bar.high)} stroke={hit ? '#ff4d4d' : '#12b54f'} strokeWidth={hit ? 2 : 1} />
+        <line x1="0" x2={pw} y1={y(bar.low)} y2={y(bar.low)} stroke={hit ? '#ff4d4d' : '#12b54f'} strokeWidth={hit ? 2 : 1} />
       </>}
       <polygon points={`${x(0)},${H - B} ${pts} ${x(n - 1)},${H - B}`} fill="url(#fillg)" />
       <polyline fill="none" stroke="#e8eef5" strokeWidth="1.6" strokeLinejoin="round" points={pts} />
       <line x1={x(n - 1)} x2={pw} y1={y(last.q)} y2={y(last.q)} stroke="#cfd8dc" strokeWidth="1.4" />
       <circle cx={x(n - 1)} cy={y(last.q)} r="9" fill="rgba(255,255,255,.18)" />
       <circle cx={x(n - 1)} cy={y(last.q)} r="4" fill="#fff" />
+      {marks.map((m, k) => {
+        if (m.t < ticks[0].t - 1) return null
+        const i = ticks.findIndex(t => t.t >= m.t - 0.5)
+        if (i < 0) return null
+        const cx = x(i), cy = y(ticks[i].q)
+        return m.kind === 'buy'
+          ? <circle key={k} cx={cx} cy={cy} r="6" fill="#1fd15a" stroke="#fff" strokeWidth="2" />
+          : <circle key={k} cx={cx} cy={cy} r="6" fill="none" stroke={m.kind === 'win' ? '#1fd15a' : '#ff4d4d'} strokeWidth="2.5" />
+      })}
       {bar && <Box yy={y(bar.high)} text={bar.high.toFixed(3)} bg="#2a9df4" fg="#fff" />}
       {bar && <Box yy={y(bar.low)} text={bar.low.toFixed(3)} bg="#2a9df4" fg="#fff" />}
       <Box yy={y(last.q)} text={last.q.toFixed(2)} bg="#fff" fg="#111" />
@@ -78,6 +87,8 @@ export default function App() {
   const [log, setLog] = useState([])
   const [stats, setStats] = useState({ n: 0, pnl: 0 })
   const [streaks, setStreaks] = useState([])
+  const [hit, setHit] = useState(false)
+  const [marks, setMarks] = useState([])
   const ws = useRef(null)
   const R = useRef({ pnl: 0, n: 0, since: 999 })
   const C = useRef(cfg); C.current = cfg
@@ -91,6 +102,8 @@ export default function App() {
     send({ proposal: 1, subscribe: 1, amount: +c.stake, basis: 'stake', contract_type: 'ACCU', currency: r.cur || 'USD', growth_rate: +c.growth, underlying_symbol: c.symbol })
   }
   // forget the old proposal stream (by id) and WAIT for the reply before opening a new one
+  const flashRed = () => { const r = R.current; setHit(true); clearTimeout(r.ft); r.ft = setTimeout(() => setHit(false), 1000) }
+  const addMark = (t, kind) => setMarks(ms => [...ms, { t, kind }].slice(-40))
   const subProposal = () => {
     const r = R.current
     r.pid = null; r.bar = null; setBar(null); r.reqAt = Date.now()
@@ -100,7 +113,7 @@ export default function App() {
   const subscribe = () => {
     const c = C.current, r = R.current
     send({ forget_all: 'ticks' })
-    r.since = 999; setTicks([])
+    r.since = 999; r.lastStay = null; r.hist = []; setTicks([]); setMarks([]); setStreaks([])
     send({ ticks: c.symbol, subscribe: 1 })
     subProposal()
   }
@@ -115,6 +128,8 @@ export default function App() {
   const onTick = (q, epoch) => {
     const r = R.current, c = C.current
     setTicks(t => [...t.slice(-79), { q, t: epoch || Date.now() / 1000 }])
+    r.lastT = epoch || Date.now() / 1000
+    if (r.bar && Date.now() - (r.propAt || 0) < 3000 && (q >= r.bar.high || q <= r.bar.low)) flashRed()
     if (r.open) { // contract running: count ticks ourselves, sell after entry tick + target ticks
       r.inTicks = (r.inTicks || 0) + 1
       if (r.inTicks >= +c.target + 1 && !r.selling) { r.selling = true; send({ sell: r.open, price: 0 }) }
@@ -137,6 +152,7 @@ export default function App() {
       if (r.open !== p.contract_id) return
       r.open = null; r.busy = false; r.pnl += +p.profit; r.n++
       setStats({ n: r.n, pnl: r.pnl })
+      addMark(p.sell_time || r.lastT, p.profit >= 0 ? 'win' : 'loss')
       addLog(`${p.profit >= 0 ? '✅ WIN' : '🔴 LOSS'}  ${(+p.profit).toFixed(2)}`)
       if (r.pnl <= -c.maxLoss || r.n >= c.maxTrades) { setRun(false); addLog('⏹ Limit reached — bot stopped') }
       return
@@ -161,12 +177,15 @@ export default function App() {
         if (d.high_barrier) { r.bar = { high: +d.high_barrier, low: +d.low_barrier }; setBar(r.bar) }
         // Deriv's own "ticks stayed in" list: [current streak, previous streaks...] (same numbers as DTrader)
         if (Array.isArray(d.ticks_stayed_in) && d.ticks_stayed_in.length) {
-          r.hasStay = true; r.since = +d.ticks_stayed_in[0]; setStreaks(d.ticks_stayed_in.slice(0, 10))
+          r.hasStay = true; r.since = +d.ticks_stayed_in[0]
+          if (r.lastStay != null && r.since < r.lastStay) { r.hist = [r.lastStay, ...(r.hist || [])].slice(0, 12); flashRed() }
+          r.lastStay = r.since
+          setStreaks(d.ticks_stayed_in.length > 1 ? d.ticks_stayed_in.slice(0, 12).map(Number) : [r.since, ...(r.hist || [])])
           maybeEnter() // proposal is fresh right now, so buy immediately
         }
         break
       }
-      case 'buy': r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
+      case 'buy': addMark(m.buy.start_time || r.lastT, 'buy'); r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
         send({ proposal_open_contract: 1, contract_id: m.buy.contract_id, subscribe: 1 }); break
       case 'forget': if (r.pendingSub) reqProposal(); break
       case 'proposal_open_contract': onPoc(m.proposal_open_contract); break
@@ -258,10 +277,14 @@ export default function App() {
     <div className="wrap">
       <div className="card">
         <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.q.toFixed(2)}</span></div>
-        <Chart ticks={ticks} bar={bar} />
+        <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} />
         <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
           <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b></span></div>
-        {streaks.length > 0 && <div className="row"><span>Deriv streaks:</span><span>{streaks.join(' · ')}</span></div>}
+        {streaks.length > 0 && (
+          <div className="chips"><span className="lbl">Streaks</span>
+            {streaks.map((v, i) => <span key={i} className={'chip' + (i === 0 ? ' cur' : '')}>{v}</span>)}
+          </div>
+        )}
         <div className="log">{log.map((l, i) => <div key={i}>{l}</div>)}</div>
       </div>
       <div className="card">
