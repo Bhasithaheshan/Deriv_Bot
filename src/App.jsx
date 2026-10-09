@@ -11,7 +11,7 @@ const api = async body => {
   return j
 }
 const norm = a => ({ id: a.account_id || a.id || a.loginid, demo: /demo|virtual/i.test(JSON.stringify(a)), bal: a.balance, cur: a.currency })
-const MARKETS = { 'Volatility 10 (1s)': '1HZ10V', 'Volatility 25 (1s)': '1HZ25V', 'Volatility 50 (1s)': '1HZ50V', 'Volatility 75 (1s)': '1HZ75V', 'Volatility 100 (1s)': '1HZ100V' }
+const MARKETS = { 'Volatility 10 Index': 'R_10', 'Volatility 25 Index': 'R_25', 'Volatility 50 Index': 'R_50', 'Volatility 75 Index': 'R_75', 'Volatility 100 Index': 'R_100' }
 
 function Chart({ ticks, bar, hit, marks }) {
   const W = 900, H = 400, L = 8, RP = 86, T = 16, B = 26
@@ -77,7 +77,7 @@ function Chart({ ticks, bar, hit, marks }) {
 }
 
 export default function App() {
-  const [cfg, setCfg] = useState({ symbol: '1HZ100V', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxTrades: 20 })
+  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxTrades: 20 })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
   const [bar, setBar] = useState(null)
@@ -125,7 +125,7 @@ export default function App() {
 
   const buy = () => {
     const r = R.current
-    if (!r.pid || r.open || !r.trading || Date.now() - (r.propAt || 0) > 2000) { r.busy = false; return }
+    if (!r.pid || r.open || !r.trading || Date.now() - (r.propAt || 0) > 4000) { r.busy = false; return }
     if (r.propStake != null && r.propStake !== +C.current.stake) { r.busy = false; return } // stake changed, wait for new proposal
     r.busy = true; r.selling = false
     send({ buy: r.pid, price: r.ask || +C.current.stake })
@@ -135,16 +135,16 @@ export default function App() {
     const r = R.current, c = C.current
     setTicks(t => [...t.slice(-79), { q, t: epoch || Date.now() / 1000 }])
     r.lastT = epoch || Date.now() / 1000
-    if (r.bar && Date.now() - (r.propAt || 0) < 3000 && (q >= r.bar.high || q <= r.bar.low)) flashRed()
+    if (r.bar && Date.now() - (r.propAt || 0) < 5000 && (q >= r.bar.high || q <= r.bar.low)) flashRed()
     if (r.open) { // contract running: count ticks ourselves, sell after entry tick + target ticks
       r.inTicks = (r.inTicks || 0) + 1
       if (r.inTicks >= +c.target + 1 && !r.selling) { r.selling = true; send({ sell: r.open, price: 0 }) }
       return
     }
     const now = Date.now()
-    if (now - (r.propAt || 0) > 3000 && now - (r.reqAt || 0) > 3000) subProposal() // self-heal dead proposal stream
+    if (now - (r.propAt || 0) > 7000 && now - (r.reqAt || 0) > 7000) subProposal() // self-heal dead proposal stream
     if (r.hasStay) return // Deriv's own streak counter drives entries (see proposal handler)
-    if (r.bar && now - (r.propAt || 0) < 3000 && (q >= r.bar.high || q <= r.bar.low)) r.since = 0 // fallback detection
+    if (r.bar && now - (r.propAt || 0) < 5000 && (q >= r.bar.high || q <= r.bar.low)) r.since = 0 // fallback detection
     else r.since = Math.min(r.since + 1, 999)
     if (r.since === +c.wait) setTimeout(maybeEnter, 400)
   }
