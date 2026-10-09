@@ -328,6 +328,10 @@ export default function App() {
   return (
     <div onClick={() => setMenu(false)}>
       <header className="top">
+        <div className="brand">
+          <img src="/logo.png" alt="" className="blogo" onError={e => { e.currentTarget.style.display = 'none' }} />
+          <span className="by">By TradeXpertz</span>
+        </div>
         <div className="topright" onClick={e => e.stopPropagation()}>
           {!tok ? (
             <>
