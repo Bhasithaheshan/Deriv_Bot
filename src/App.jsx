@@ -14,15 +14,55 @@ const norm = a => ({ id: a.account_id || a.id || a.loginid, demo: /demo|virtual/
 const MARKETS = { 'Volatility 10 (1s)': '1HZ10V', 'Volatility 25 (1s)': '1HZ25V', 'Volatility 50 (1s)': '1HZ50V', 'Volatility 75 (1s)': '1HZ75V', 'Volatility 100 (1s)': '1HZ100V' }
 
 function Chart({ ticks, bar }) {
-  if (ticks.length < 2) return <div className="chart" />
-  const vals = [...ticks, ...(bar ? [bar.high, bar.low] : [])]
-  const mn = Math.min(...vals), mx = Math.max(...vals), W = 700, H = 320
-  const y = v => H - ((v - mn) / (mx - mn || 1)) * (H - 20) - 10
-  const x = i => (i / (ticks.length - 1)) * W
+  const W = 900, H = 400, L = 8, RP = 86, T = 16, B = 26
+  if (ticks.length < 2) return <div className="chart" style={{ height: 300 }} />
+  const vals = ticks.map(t => t.q).concat(bar ? [bar.high, bar.low] : [])
+  let mn = Math.min(...vals), mx = Math.max(...vals)
+  const pad = (mx - mn || 1) * 0.08; mn -= pad; mx += pad
+  const pw = W - RP, xl = L + (pw - L) * 0.8 // leave empty space on the right like Deriv
+  const y = v => T + ((mx - v) / (mx - mn)) * (H - T - B)
+  const n = ticks.length
+  const x = i => L + (i / (n - 1)) * (xl - L)
+  const last = ticks[n - 1]
+  const pts = ticks.map((t, i) => `${x(i)},${y(t.q)}`).join(' ')
+  const grid = [0, 1, 2, 3, 4].map(k => mn + ((mx - mn) * k) / 4)
+  const tIdx = [0, 0.25, 0.5, 0.75, 1].map(f => Math.round(f * (n - 1)))
+  const fmt = e => new Date(e * 1000).toLocaleTimeString([], { hour12: false })
+  const Box = ({ yy, text, bg, fg }) => (
+    <g>
+      <rect x={pw + 4} y={yy - 10} width={RP - 8} height={20} rx={4} fill={bg} />
+      <text x={pw + 4 + (RP - 8) / 2} y={yy + 4} textAnchor="middle" fontSize="12" fontWeight="600" fill={fg}>{text}</text>
+    </g>
+  )
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="chart">
-      {bar && <rect x="0" y={y(bar.high)} width={W} height={Math.max(y(bar.low) - y(bar.high), 1)} fill="rgba(0,200,90,.15)" stroke="#0c5" />}
-      <polyline fill="none" stroke="#fff" strokeWidth="1.5" points={ticks.map((v, i) => `${x(i)},${y(v)}`).join(' ')} />
+      <defs>
+        <linearGradient id="fillg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#fff" stopOpacity=".16" /><stop offset="100%" stopColor="#fff" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      {grid.map((g, i) => (
+        <g key={i}>
+          <line x1="0" x2={pw} y1={y(g)} y2={y(g)} stroke="#1f2630" />
+          <text x={pw + 10} y={y(g) + 4} fontSize="11" fill="#5d6878">{g.toFixed(2)}</text>
+        </g>
+      ))}
+      {tIdx.map((i, k) => (
+        <text key={k} x={Math.min(Math.max(x(i), 30), pw - 30)} y={H - 8} textAnchor="middle" fontSize="11" fill="#5d6878">{fmt(ticks[i].t)}</text>
+      ))}
+      {bar && <>
+        <rect x="0" y={y(bar.high)} width={pw} height={Math.max(y(bar.low) - y(bar.high), 1)} fill="rgba(0,200,90,.14)" />
+        <line x1="0" x2={pw} y1={y(bar.high)} y2={y(bar.high)} stroke="#12b54f" />
+        <line x1="0" x2={pw} y1={y(bar.low)} y2={y(bar.low)} stroke="#12b54f" />
+      </>}
+      <polygon points={`${x(0)},${H - B} ${pts} ${x(n - 1)},${H - B}`} fill="url(#fillg)" />
+      <polyline fill="none" stroke="#e8eef5" strokeWidth="1.6" strokeLinejoin="round" points={pts} />
+      <line x1={x(n - 1)} x2={pw} y1={y(last.q)} y2={y(last.q)} stroke="#cfd8dc" strokeWidth="1.4" />
+      <circle cx={x(n - 1)} cy={y(last.q)} r="9" fill="rgba(255,255,255,.18)" />
+      <circle cx={x(n - 1)} cy={y(last.q)} r="4" fill="#fff" />
+      {bar && <Box yy={y(bar.high)} text={bar.high.toFixed(3)} bg="#2a9df4" fg="#fff" />}
+      {bar && <Box yy={y(bar.low)} text={bar.low.toFixed(3)} bg="#2a9df4" fg="#fff" />}
+      <Box yy={y(last.q)} text={last.q.toFixed(2)} bg="#fff" fg="#111" />
     </svg>
   )
 }
@@ -72,9 +112,9 @@ export default function App() {
     send({ buy: r.pid, price: +C.current.stake })
     r.pid = null // a bought proposal id is single-use
   }
-  const onTick = q => {
+  const onTick = (q, epoch) => {
     const r = R.current, c = C.current
-    setTicks(t => [...t.slice(-79), q])
+    setTicks(t => [...t.slice(-79), { q, t: epoch || Date.now() / 1000 }])
     if (r.open) { // contract running: count ticks ourselves, sell after entry tick + target ticks
       r.inTicks = (r.inTicks || 0) + 1
       if (r.inTicks >= +c.target + 1 && !r.selling) { r.selling = true; send({ sell: r.open, price: 0 }) }
@@ -113,7 +153,7 @@ export default function App() {
       return
     }
     switch (m.msg_type) {
-      case 'tick': onTick(m.tick.quote); break
+      case 'tick': onTick(m.tick.quote, m.tick.epoch); break
       case 'balance': setBalance(`${m.balance.balance} ${m.balance.currency}`); r.cur = m.balance.currency; break
       case 'proposal': {
         const d = m.proposal.contract_details || {}
@@ -217,7 +257,7 @@ export default function App() {
   return (
     <div className="wrap">
       <div className="card">
-        <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.toFixed(2)}</span></div>
+        <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.q.toFixed(2)}</span></div>
         <Chart ticks={ticks} bar={bar} />
         <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
           <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b></span></div>
