@@ -151,16 +151,21 @@ export default function App() {
       }
     }
   }
-  const reqTicks = () => { const c = C.current, r = R.current; r.tickSym = c.symbol; r.tickReqAt = Date.now(); send({ ticks: c.symbol, subscribe: 1 }) }
+  const reqTicks = () => {
+    const c = C.current, r = R.current
+    r.tickSym = c.symbol; r.lastSym = c.symbol; r.tickReqAt = Date.now()
+    if (r.noHist) send({ ticks: c.symbol, subscribe: 1 })
+    else send({ ticks_history: c.symbol, end: 'latest', count: 150, style: 'ticks', subscribe: 1 }) // history now + live ticks after
+  }
   const flashRed = () => { const r = R.current; setHit(true); clearTimeout(r.ft); r.ft = setTimeout(() => setHit(false), 1000) }
   const addMark = (t, kind) => setMarks(ms => [...ms, { t, kind }].slice(-40))
   const subProposal = () => {
     const r = R.current
     r.pid = null; r.bar = null; setBar(null)
-    if (r.pendingSub) return // already waiting for a forget reply; it will request with the latest settings
+    if (r.pendingSub && Date.now() - (r.pendAt || 0) < 3000) return // waiting for a forget reply; it will request with the latest settings
     if (r.reqPending) { r.redo = true; return } // a request is in flight; redo once it answers
     r.reqAt = Date.now()
-    if (r.subId) { const id = r.subId; r.subId = null; r.pendingSub = true; send({ forget: id }) }
+    if (r.subId) { const id = r.subId; r.subId = null; r.pendingSub = true; r.pendAt = Date.now(); r.pforget = id; send({ forget: id }) }
     else reqProposal()
   }
   const subscribe = () => {
@@ -168,10 +173,10 @@ export default function App() {
     const key = `${c.symbol}|${c.growth}|${c.stake}`
     if (r.subKey === key) return // nothing changed -> don't spam Deriv (rate limits)
     r.subKey = key
-    if (r.tickSym !== c.symbol) { // market changed (or first connect): swap the tick stream
-      r.since = 999; r.lastStay = null; r.hist = []; setTicks([]); setMarks([]); setStreaks([])
-      if (r.ftick) { /* a forget is already in flight; its reply requests the latest symbol */ }
-      else if (r.tickSub) { r.ftick = r.tickSub; r.tickSub = null; send({ forget: r.ftick }) }
+    if (r.tickSym !== c.symbol) { // market changed (or first connect on this socket)
+      if (r.lastSym !== c.symbol) { r.since = 999; r.lastStay = null; r.hist = []; setTicks([]); setMarks([]); setStreaks([]) } // same market on a new socket: keep the chart
+      if (r.ftick) { /* a forget-all is already in flight; its reply requests the latest symbol */ }
+      else if (r.tickSub) { send({ forget: r.tickSub }); r.tickSub = null; reqTicks() } // different symbol: no need to wait
       else if (r.tickSym) { r.ftick = 'all'; send({ forget_all: 'ticks' }) } // old stream's id unknown
       else reqTicks()
     }
@@ -188,6 +193,7 @@ export default function App() {
   }
   const onTick = (q, epoch) => {
     const r = R.current, c = C.current
+    if (epoch && r.lastT && epoch <= r.lastT) return // already have this tick (history overlap)
     setTicks(t => [...t.slice(-299), { q, t: epoch || Date.now() / 1000 }])
     r.lastT = epoch || Date.now() / 1000
     if (r.bar && Date.now() - (r.propAt || 0) < 5000 && (q >= r.bar.high || q <= r.bar.low)) flashRed()
@@ -226,7 +232,8 @@ export default function App() {
       if (/not found among your open/i.test(m.error.message || '')) return // contract already closed; harmless
       if (!/already subscribed/i.test(m.error.message || '')) addLog('❌ ' + (m.error.message || JSON.stringify(m.error)))
       if (m.echo_req?.forget && m.echo_req.forget === r.ftick) { r.ftick = null; reqTicks(); return }
-      if (m.echo_req?.ticks && /already subscribed/i.test(m.error.message || '')) { r.tickSub = null; send({ forget_all: 'ticks' }); return }
+      if ((m.echo_req?.ticks || m.echo_req?.ticks_history) && /already subscribed/i.test(m.error.message || '')) { r.tickSub = null; r.ftick = 'all'; send({ forget_all: 'ticks' }); return }
+      if (m.echo_req?.ticks_history && !r.noHist) { r.noHist = true; reqTicks(); return } // history not available -> plain ticks
       if (m.echo_req?.proposal) { // the proposal request itself failed
         r.reqPending = false
         if (/already subscribed/i.test(m.error.message || '')) { r.subId = null; r.pendingSub = true; send({ forget_all: 'proposal' }) }
@@ -239,11 +246,23 @@ export default function App() {
     }
     switch (m.msg_type) {
       case 'tick': {
-        const ts = m.echo_req?.ticks || m.tick.symbol || m.tick.underlying_symbol
+        const ts = m.echo_req?.ticks || m.echo_req?.ticks_history || m.tick.symbol || m.tick.underlying_symbol
         if (ts && ts !== C.current.symbol) break // late tick from the previous market
         if (m.subscription?.id) r.tickSub = m.subscription.id
         r.lastTickAt = Date.now()
         onTick(m.tick.quote, m.tick.epoch); break
+      }
+      case 'history': case 'ticks_history': {
+        const h = m.history
+        if (!h?.prices?.length) break
+        const sym = m.echo_req?.ticks_history
+        if (sym && sym !== C.current.symbol) break
+        if (m.subscription?.id) r.tickSub = m.subscription.id
+        r.lastTickAt = Date.now()
+        const arr = h.prices.map((q, i) => ({ q: +q, t: +h.times[i] }))
+        r.lastT = arr[arr.length - 1].t
+        setTicks(arr.slice(-300))
+        break
       }
       case 'balance': setBalance(`${m.balance.balance} ${m.balance.currency}`); r.cur = m.balance.currency; break
       case 'proposal': {
@@ -265,10 +284,12 @@ export default function App() {
       }
       case 'buy': addMark(m.buy.start_time || r.lastT, 'buy'); r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
         send({ proposal_open_contract: 1, contract_id: m.buy.contract_id, subscribe: 1 }); break
-      case 'forget': case 'forget_all':
-        if (m.echo_req?.forget_all === 'ticks' || (m.echo_req?.forget && m.echo_req.forget === r.ftick)) { r.ftick = null; reqTicks(); break }
-        if (r.pendingSub) reqProposal()
+      case 'forget': case 'forget_all': {
+        const e = m.echo_req || {}
+        if (e.forget_all === 'ticks' || (e.forget && e.forget === r.ftick)) { r.ftick = null; reqTicks(); break }
+        if (r.pendingSub && (e.forget_all === 'proposal' || (e.forget && e.forget === r.pforget))) reqProposal()
         break
+      }
       case 'proposal_open_contract': onPoc(m.proposal_open_contract); break
       default:
     }
@@ -323,7 +344,7 @@ export default function App() {
 
   const useAccount = async (a, tok) => {
     try {
-      setAcct(a); setRun(false); setBalance(null)
+      setAcct(a); setRun(false); setBalance(null); sessionStorage.setItem('acctId', a.id)
       const j = await withRetry(() => api({ action: 'otp', token: tok, accountId: a.id }), 'account')
       const url = j.data?.url
       if (!url) throw new Error('OTP url nehe: ' + JSON.stringify(j).slice(0, 200))
@@ -333,15 +354,20 @@ export default function App() {
   }
   const retryNow = () => { setFail(false); const t = sessionStorage.getItem('tok'); if (!t) return; accts.length ? useAccount(acct || accts[0], t) : loadAccounts(t) }
   const loadAccounts = async tok => {
+    let cached = null
+    try { cached = JSON.parse(sessionStorage.getItem('accts') || 'null') } catch { /* ignore */ }
+    const want = sessionStorage.getItem('acctId')
+    if (cached?.length) { setAccts(cached); useAccount(cached.find(a => a.id === want) || cached.find(a => a.demo) || cached[0], tok) } // no waiting for the accounts call
     try {
       const j = await withRetry(() => api({ action: 'accounts', token: tok }), 'accounts')
       const list = (Array.isArray(j.data) ? j.data : j.data?.accounts || j.accounts || []).map(norm).filter(a => a.id)
       if (!list.length) return addLog('❌ Accounts nehe: ' + JSON.stringify(j).slice(0, 250))
-      setAccts(list)
-      useAccount(list.find(a => a.demo) || list[0], tok) // demo first = safer
+      setAccts(list); sessionStorage.setItem('accts', JSON.stringify(list))
+      if (!cached?.length) useAccount(list.find(a => a.demo) || list[0], tok) // demo first = safer
     } catch (e) {
       const msg = String(e.message || e)
-      if (/^40[13]/.test(msg)) { sessionStorage.removeItem('tok'); addLog('❌ Login expired — please log in again') }
+      if (cached?.length && !/^40[13]/.test(msg)) return // already connected from the saved list; refresh failed silently
+      if (/^40[13]/.test(msg)) { sessionStorage.removeItem('tok'); sessionStorage.removeItem('accts'); addLog('❌ Login expired — please log in again') }
       else addLog('❌ Deriv unavailable (' + msg.slice(0, 90) + ') — press Retry')
       setFail(true)
     }
