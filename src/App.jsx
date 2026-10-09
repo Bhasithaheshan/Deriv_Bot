@@ -119,6 +119,7 @@ export default function App() {
   const [stats, setStats] = useState({ n: 0, pnl: 0 })
   const [streaks, setStreaks] = useState([])
   const [hit, setHit] = useState(false)
+  const [menu, setMenu] = useState(false)   // account dropdown
   const [vis, setVis] = useState(60) // how many ticks the chart shows (zoom)
   const onZoom = useCallback(dir => setVis(v => Math.min(280, Math.max(12, Math.round(v * (dir > 0 ? 1.25 : 0.8))))), [])
   const onReset = useCallback(() => setVis(60), [])
@@ -325,50 +326,72 @@ export default function App() {
   const trading = !!acct && R.current.trading
 
   return (
-    <div className="wrap">
-      <div className="card">
-        <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.q.toFixed(2)}</span></div>
-        <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} vis={vis} onZoom={onZoom} onReset={onReset} />
-        <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
-          <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b></span></div>
-        {streaks.length > 0 && (
-          <div className="chips"><span className="lbl">Streaks</span>
-            {streaks.map((v, i) => <span key={i} className={'chip' + (i === 0 ? ' cur' : '')}>{v}</span>)}
-          </div>
-        )}
-        <div className="log">{log.map((l, i) => <div key={i}>{l}</div>)}</div>
-      </div>
-      <div className="card">
-        {!tok ? (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="stop" style={{ marginTop: 0, background: 'transparent', border: '1px solid #444' }} onClick={() => login(false)}>Log in</button>
-            <button style={{ marginTop: 0 }} onClick={() => login(true)}>Sign up</button>
-          </div>
-        ) : (
-          <>
-            <label>Account</label>
-            <select value={acct?.id || ''} onChange={e => useAccount(accts.find(a => a.id === e.target.value), tok)}>
-              {accts.map(a => <option key={a.id} value={a.id}>{a.id} {a.demo ? '(demo)' : '(REAL)'}</option>)}
-            </select>
-            <div className="row"><span>{live ? '🔴 REAL' : '🟢 Demo'}</span><span>{balance || '...'}</span></div>
-            <button className="stop" style={{ marginTop: 8, padding: 8 }} onClick={logout}>Log out</button>
-          </>
-        )}
-        <label>Market</label>
-        <select value={cfg.symbol} onChange={set('symbol')}>{Object.entries(MARKETS).map(([n, s]) => <option key={s} value={s}>{n}</option>)}</select>
-        <label>Growth rate</label>
-        <select value={cfg.growth} onChange={set('growth')}>{[1, 2, 3, 4, 5].map(g => <option key={g} value={g / 100}>{g}%</option>)}</select>
-        <label>Target ticks (auto-sell after N ticks)</label>
-        <select value={cfg.target} onChange={set('target')}>{[1, 2, 3, 4, 5].map(t => <option key={t}>{t}</option>)}</select>
-        <label>Strategy: enter after barrier hit + wait N ticks (0 = immediately)</label>
-        <select value={cfg.wait} onChange={set('wait')}>{[0, 1, 2, 3, 5, 8].map(t => <option key={t}>{t}</option>)}</select>
-        <label>Stake</label><input type="number" min="1" value={cfg.stake} onChange={set('stake')} />
-        <label>Stop after total loss of</label><input type="number" value={cfg.maxLoss} onChange={set('maxLoss')} />
-        <label>Max trades</label><input type="number" value={cfg.maxTrades} onChange={set('maxTrades')} />
-        <button className={run ? 'stop' : ''} disabled={!trading}
-          onClick={() => { if (!run && live && !confirm('REAL account! Start auto trading?')) return; setRun(!run) }}>
-          {run ? 'Stop bot' : tok ? 'Start bot' : 'Log in to start'}
-        </button>
+    <div onClick={() => setMenu(false)}>
+      <header className="top">
+        <div className="topright" onClick={e => e.stopPropagation()}>
+          {!tok ? (
+            <>
+              <button className="pill" onClick={() => login(false)}>Log in</button>
+              <button className="pill red" onClick={() => login(true)}>Sign up</button>
+            </>
+          ) : (
+            <>
+              <div className="acctwrap">
+                <button className="acct" onClick={() => setMenu(m => !m)}>
+                  <span className="acctin">
+                    <span className={'alab ' + (live ? 'real' : 'demo')}>{live ? 'Real account' : 'Demo account'}</span>
+                    <b>{balance || '...'}</b>
+                  </span>
+                  <span className="chev">⌄</span>
+                </button>
+                {menu && (
+                  <div className="menu">
+                    {accts.map(a => (
+                      <button key={a.id} className={'mi' + (a.id === acct?.id ? ' sel' : '')} onClick={() => { setMenu(false); useAccount(a, tok) }}>
+                        <span className={a.demo ? 'demo' : 'real'}>{a.demo ? 'Demo' : 'Real'}</span>
+                        <span>{a.id}</span>
+                        <b>{a.id === acct?.id ? balance : `${a.bal ?? ''} ${a.cur ?? ''}`}</b>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button className="pill" onClick={logout}>Log out</button>
+            </>
+          )}
+        </div>
+      </header>
+
+      <div className="wrap">
+        <div className="card">
+          <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.q.toFixed(2)}</span></div>
+          <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} vis={vis} onZoom={onZoom} onReset={onReset} />
+          <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
+            <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b></span></div>
+          {streaks.length > 0 && (
+            <div className="chips"><span className="lbl">Streaks</span>
+              {streaks.map((v, i) => <span key={i} className={'chip' + (i === 0 ? ' cur' : '')}>{v}</span>)}
+            </div>
+          )}
+          <div className="log">{log.map((l, i) => <div key={i}>{l}</div>)}</div>
+        </div>
+        <div className="card">
+          <label>Market</label>
+          <select value={cfg.symbol} onChange={set('symbol')}>{Object.entries(MARKETS).map(([n, sy]) => <option key={sy} value={sy}>{n}</option>)}</select>
+          <label>Growth rate</label>
+          <select value={cfg.growth} onChange={set('growth')}>{[1, 2, 3, 4, 5].map(g => <option key={g} value={g / 100}>{g}%</option>)}</select>
+          <label>Target ticks (auto-sell after N ticks)</label>
+          <select value={cfg.target} onChange={set('target')}>{[1, 2, 3, 4, 5].map(t => <option key={t}>{t}</option>)}</select>
+          <label>Strategy: enter after barrier hit + wait N ticks (0 = immediately)</label>
+          <select value={cfg.wait} onChange={set('wait')}>{[0, 1, 2, 3, 5, 8].map(t => <option key={t}>{t}</option>)}</select>
+          <label>Stake</label><input type="number" min="1" value={cfg.stake} onChange={set('stake')} />
+          <label>Stop after total loss of</label><input type="number" value={cfg.maxLoss} onChange={set('maxLoss')} />
+          <label>Max trades</label><input type="number" value={cfg.maxTrades} onChange={set('maxTrades')} />
+          <button className={'cta' + (run ? ' stop' : '')} disabled={!trading}
+            onClick={() => { if (!run && live && !confirm('REAL account! Start auto trading?')) return; setRun(!run) }}>
+            {run ? 'Stop bot' : tok ? 'Start bot' : 'Log in to start'}
+          </button>
+        </div>
       </div>
     </div>
   )
