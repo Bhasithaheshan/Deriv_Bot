@@ -99,6 +99,8 @@ export default function App() {
   const reqProposal = () => {
     const c = C.current, r = R.current
     r.pendingSub = false; r.reqAt = Date.now()
+    if (!(+c.stake >= 1)) return // Deriv minimum stake is 1.00
+    r.reqPending = true
     send({ proposal: 1, subscribe: 1, amount: +c.stake, basis: 'stake', contract_type: 'ACCU', currency: r.cur || 'USD', growth_rate: +c.growth, underlying_symbol: c.symbol })
   }
   // forget the old proposal stream (by id) and WAIT for the reply before opening a new one
@@ -106,7 +108,10 @@ export default function App() {
   const addMark = (t, kind) => setMarks(ms => [...ms, { t, kind }].slice(-40))
   const subProposal = () => {
     const r = R.current
-    r.pid = null; r.bar = null; setBar(null); r.reqAt = Date.now()
+    r.pid = null; r.bar = null; setBar(null)
+    if (r.pendingSub) return // already waiting for a forget reply; it will request with the latest settings
+    if (r.reqPending) { r.redo = true; return } // a request is in flight; redo once it answers
+    r.reqAt = Date.now()
     if (r.subId) { const id = r.subId; r.subId = null; r.pendingSub = true; send({ forget: id }) }
     else reqProposal()
   }
@@ -121,8 +126,9 @@ export default function App() {
   const buy = () => {
     const r = R.current
     if (!r.pid || r.open || !r.trading || Date.now() - (r.propAt || 0) > 2000) { r.busy = false; return }
+    if (r.propStake != null && r.propStake !== +C.current.stake) { r.busy = false; return } // stake changed, wait for new proposal
     r.busy = true; r.selling = false
-    send({ buy: r.pid, price: +C.current.stake })
+    send({ buy: r.pid, price: r.ask || +C.current.stake })
     r.pid = null // a bought proposal id is single-use
   }
   const onTick = (q, epoch) => {
@@ -162,7 +168,12 @@ export default function App() {
     const m = JSON.parse(e.data), r = R.current
     if (m.error) {
       if (/not found among your open/i.test(m.error.message || '')) return // contract already closed; harmless
-      addLog('❌ ' + (m.error.message || JSON.stringify(m.error)))
+      if (!/already subscribed/i.test(m.error.message || '')) addLog('❌ ' + (m.error.message || JSON.stringify(m.error)))
+      if (m.echo_req?.proposal) { // the proposal request itself failed
+        r.reqPending = false
+        if (/already subscribed/i.test(m.error.message || '')) { r.subId = null; r.pendingSub = true; send({ forget_all: 'proposal' }) }
+        return
+      }
       if (r.pendingSub) { reqProposal(); return }
       if (r.open) r.selling = false // retry sell on next tick
       else if (r.busy) { r.busy = false; subProposal() } // buy failed -> fresh proposal
@@ -173,7 +184,10 @@ export default function App() {
       case 'balance': setBalance(`${m.balance.balance} ${m.balance.currency}`); r.cur = m.balance.currency; break
       case 'proposal': {
         const d = m.proposal.contract_details || {}
+        r.reqPending = false
         r.pid = m.proposal.id; r.subId = m.subscription?.id || r.subId; r.propAt = Date.now()
+        r.ask = +m.proposal.ask_price || null; r.propStake = m.echo_req?.amount != null ? +m.echo_req.amount : null
+        if (r.redo) { r.redo = false; subProposal(); break } // settings changed while request was in flight
         if (d.high_barrier) { r.bar = { high: +d.high_barrier, low: +d.low_barrier }; setBar(r.bar) }
         // Deriv's own "ticks stayed in" list: [current streak, previous streaks...] (same numbers as DTrader)
         if (Array.isArray(d.ticks_stayed_in) && d.ticks_stayed_in.length) {
@@ -187,7 +201,7 @@ export default function App() {
       }
       case 'buy': addMark(m.buy.start_time || r.lastT, 'buy'); r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
         send({ proposal_open_contract: 1, contract_id: m.buy.contract_id, subscribe: 1 }); break
-      case 'forget': if (r.pendingSub) reqProposal(); break
+      case 'forget': case 'forget_all': if (r.pendingSub) reqProposal(); break
       case 'proposal_open_contract': onPoc(m.proposal_open_contract); break
       default:
     }
@@ -195,7 +209,7 @@ export default function App() {
 
   const connect = (url, trading) => {
     const r = R.current
-    r.url = url; r.trading = trading; r.subId = null; r.pendingSub = false; r.pid = null; r.bar = null
+    r.url = url; r.trading = trading; r.subId = null; r.pendingSub = false; r.reqPending = false; r.redo = false; r.pid = null; r.bar = null
     const old = ws.current; ws.current = null; old?.close()
     const s = new WebSocket(url); ws.current = s
     s.onopen = () => {
@@ -266,7 +280,10 @@ export default function App() {
     }
   }, [])
 
-  useEffect(() => { if (ws.current?.readyState === 1) subscribe() }, [cfg.symbol, cfg.growth, cfg.stake])
+  useEffect(() => { // debounce: don't re-subscribe on every keystroke in the stake box
+    const id = setTimeout(() => { if (ws.current?.readyState === 1) subscribe() }, 700)
+    return () => clearTimeout(id)
+  }, [cfg.symbol, cfg.growth, cfg.stake])
 
   const set = k => e => setCfg({ ...cfg, [k]: e.target.value })
   const tok = sessionStorage.getItem('tok')
