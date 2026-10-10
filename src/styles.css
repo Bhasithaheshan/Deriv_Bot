@@ -45,3 +45,14 @@ input,select{width:100%;padding:9px;background:#0e1116;color:#fff;border:1px sol
 .conn{color:#8b95a5;font-size:14px}
 .mini{margin-left:8px;padding:3px 10px;border-radius:14px;border:1px solid #2a303a;background:#11151b;color:#cfd8dc;font-size:12px;cursor:pointer}
 .mini:hover{background:#1a212b}
+
+.scan{margin-top:12px;border-top:1px solid #262c36;padding-top:10px}
+.scanhead{display:flex;flex-wrap:wrap;gap:16px;align-items:center;font-size:13px;color:#cfd8dc}
+.chk{display:inline-flex;align-items:center;gap:6px}
+.scan input[type=checkbox]{width:auto;padding:0}
+.mini-in{width:64px !important;padding:4px 6px !important}
+.scantbl{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+.scantbl th{color:#8b95a5;font-weight:500;text-align:left;padding:4px 8px}
+.scantbl td{padding:6px 8px;border-top:1px solid #1f2630;cursor:pointer}
+.scantbl tr.cur td{background:#161c25}
+.scantbl tr:hover td{background:#1a212b}

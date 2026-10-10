@@ -23,6 +23,17 @@ const refreshToken = () => { // standard OAuth2 refresh; returns the new access 
   })().finally(() => { refreshing = null })
   return refreshing
 }
+// streak lengths from a price series: barrier hit when |move| >= pct * previous price
+const streakStats = (px, pct) => {
+  const out = []; let cur = 0
+  for (let i = 1; i < px.length; i++) {
+    if (Math.abs(px[i] - px[i - 1]) >= pct * px[i - 1] - 1e-9) { out.push(cur); cur = 0 } else cur++
+  }
+  out.shift() // oldest streak is cut off by the window
+  const last3 = out.slice(-3)
+  const avg = last3.length ? last3.reduce((a, b) => a + b, 0) / last3.length : 0
+  return { cur, last: out.length ? out[out.length - 1] : 0, avg, n: out.length }
+}
 const lim = v => (+v > 0 ? +v : Infinity) // blank / 0 = no limit
 const api = async body => {
   const r = await fetch('/api/deriv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -142,7 +153,7 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
 }
 
 export default function App() {
-  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5 })
+  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, scanOn: false, autoSwitch: false, minStreak: 10 })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
   const [bar, setBar] = useState(null)
@@ -154,6 +165,7 @@ export default function App() {
   const [streaks, setStreaks] = useState([])
   const [hit, setHit] = useState(false)
   const [menu, setMenu] = useState(false)   // account dropdown
+  const [scan, setScan] = useState({}) // market scanner results
   const [fail, setFail] = useState(false) // connection/login problem -> show Retry
   const [vis, setVis] = useState(60) // how many ticks the chart shows (zoom)
   const onZoom = useCallback(dir => setVis(v => Math.min(280, Math.max(12, Math.round(v * (dir > 0 ? 1.25 : 0.8))))), [])
@@ -270,7 +282,7 @@ export default function App() {
   }
   const maybeEnter = () => {
     const r = R.current, c = C.current
-    if (RUN.current && r.trading && !r.open && !r.busy && r.pnl > -lim(c.maxLoss) && r.pnl < lim(c.maxProfit) && r.since === +c.wait) buy()
+    if (RUN.current && r.trading && !r.open && !r.busy && r.pnl > -lim(c.maxLoss) && r.pnl < lim(c.maxProfit) && r.marketOk !== false && r.since === +c.wait) buy()
   }
   const onPoc = p => {
     const r = R.current, c = C.current
@@ -456,6 +468,55 @@ export default function App() {
     return () => clearTimeout(id)
   }, [cfg.symbol, cfg.growth, cfg.stake])
 
+  // ---- Market scanner: its own public socket watches all 5 markets (history + live ticks + barrier %)
+  useEffect(() => {
+    if (!cfg.scanOn) { setScan({}); return }
+    const syms = Object.values(MARKETS), D = {}
+    syms.forEach(sy => { D[sy] = { px: [], pct: null, t: 0 } })
+    const w = new WebSocket(PUB), timers = []
+    const send1 = o => w.readyState === 1 && w.send(JSON.stringify(o))
+    w.onopen = () => syms.forEach((sy, i) => { // stagger requests to stay under rate limits
+      timers.push(setTimeout(() => send1({ ticks_history: sy, end: 'latest', count: 300, style: 'ticks', subscribe: 1 }), i * 250))
+      timers.push(setTimeout(() => send1({ proposal: 1, amount: 1, basis: 'stake', contract_type: 'ACCU', currency: 'USD', growth_rate: +C.current.growth, underlying_symbol: sy }), i * 250 + 120))
+    })
+    w.onmessage = e => {
+      const m = JSON.parse(e.data)
+      if (m.error) return
+      if (m.msg_type === 'history' || m.msg_type === 'ticks_history') {
+        const d = D[m.echo_req?.ticks_history]
+        if (d && m.history?.prices) { d.px = m.history.prices.map(Number).slice(-300); d.t = +m.history.times[m.history.times.length - 1] }
+      } else if (m.msg_type === 'tick') {
+        const d = D[m.echo_req?.ticks_history || m.echo_req?.ticks || m.tick.symbol]
+        if (d && m.tick.epoch > d.t) { d.t = m.tick.epoch; d.px.push(+m.tick.quote); if (d.px.length > 300) d.px.shift() }
+      } else if (m.msg_type === 'proposal') {
+        const d = D[m.echo_req?.underlying_symbol], cd = m.proposal?.contract_details
+        if (d && cd?.high_barrier) d.pct = (+cd.high_barrier - +cd.low_barrier) / (+cd.high_barrier + +cd.low_barrier)
+      }
+    }
+    const iv = setInterval(() => {
+      const out = {}
+      syms.forEach(sy => { const d = D[sy]; if (d.pct && d.px.length > 30) out[sy] = streakStats(d.px, d.pct) })
+      setScan(out)
+    }, 1000)
+    const ping = setInterval(() => send1({ ping: 1 }), 30000)
+    return () => { timers.forEach(clearTimeout); clearInterval(iv); clearInterval(ping); w.onopen = w.onmessage = w.onclose = null; w.close() }
+  }, [cfg.scanOn, cfg.growth])
+
+  const minS = +cfg.minStreak || 0
+  const rows = Object.entries(MARKETS).map(([name, sy]) => { const d = scan[sy]; return { name, sy, ...d, ok: !!d && d.avg >= minS } })
+  const best = rows.filter(r => r.ok).sort((a, b) => b.avg - a.avg)[0]
+  const curRow = rows.find(r => r.sy === cfg.symbol)
+  R.current.marketOk = !(cfg.scanOn && cfg.autoSwitch) || !!curRow?.ok // auto mode: only trade markets that pass the filter
+  useEffect(() => { // auto-switch to the best market (not while a trade is running, max once per 30s)
+    if (!cfg.scanOn || !cfg.autoSwitch || !best || best.sy === cfg.symbol) return
+    const r = R.current
+    if (r.open || r.busy || Date.now() - (r.lastSwitch || 0) < 30000) return
+    if (curRow?.ok && best.avg < curRow.avg * 1.2) return // only switch if clearly better
+    r.lastSwitch = Date.now()
+    setCfg(c => ({ ...c, symbol: best.sy }))
+    addLog(`🔁 Switched to ${best.name} (avg streak ${best.avg.toFixed(0)})`)
+  }, [scan])
+
   const set = k => e => setCfg({ ...cfg, [k]: e.target.value })
   const tok = store.get('tok')
   const live = acct && !acct.demo
@@ -514,6 +575,27 @@ export default function App() {
               {streaks.map((v, i) => <span key={i} className={'chip' + (i === 0 ? ' cur' : '')}>{v}</span>)}
             </div>
           )}
+          <div className="scan">
+            <div className="scanhead">
+              <label className="chk"><input type="checkbox" checked={cfg.scanOn} onChange={e => setCfg({ ...cfg, scanOn: e.target.checked })} /> Market scanner</label>
+              <label className="chk"><input type="checkbox" checked={cfg.autoSwitch} disabled={!cfg.scanOn} onChange={e => setCfg({ ...cfg, autoSwitch: e.target.checked })} /> Auto-switch to best</label>
+              <span className="chk">Skip if avg streak &lt; <input type="number" min="0" className="mini-in" value={cfg.minStreak} onChange={set('minStreak')} /></span>
+            </div>
+            {cfg.scanOn && (
+              <table className="scantbl">
+                <thead><tr><th>Market</th><th>Now</th><th>Last</th><th>Avg (3)</th><th></th></tr></thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr key={r.sy} className={r.sy === cfg.symbol ? 'cur' : ''} onClick={() => setCfg({ ...cfg, symbol: r.sy })}>
+                      <td>{r.sy === cfg.symbol ? '● ' : ''}{r.name.replace(' Index', '')}</td>
+                      <td>{r.cur ?? '…'}</td><td>{r.last ?? '…'}</td><td>{r.avg != null ? r.avg.toFixed(1) : '…'}</td>
+                      <td className={best?.sy === r.sy ? 'g' : r.avg != null && !r.ok ? 'r' : ''}>{best?.sy === r.sy ? 'BEST ★' : r.avg == null ? '' : r.ok ? 'ok' : 'skip'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
           <div className="log">{log.map((l, i) => <div key={i}>{l}</div>)}</div>
         </div>
         <div className="card">
