@@ -4,12 +4,16 @@ const API = 'https://api.derivws.com'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end()
-  const { action, code, verifier, redirect_uri, token, accountId } = req.body || {}
+  const { action, code, verifier, redirect_uri, token, accountId, refresh_token } = req.body || {}
   const clientId = process.env.VITE_DERIV_APP_ID
   try {
     let r
     if (action === 'token') {
       const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: clientId, code, redirect_uri, code_verifier: verifier })
+      if (process.env.DERIV_CLIENT_SECRET) body.set('client_secret', process.env.DERIV_CLIENT_SECRET)
+      r = await fetch(AUTH, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
+    } else if (action === 'refresh') {
+      const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token, client_id: clientId })
       if (process.env.DERIV_CLIENT_SECRET) body.set('client_secret', process.env.DERIV_CLIENT_SECRET)
       r = await fetch(AUTH, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
     } else if (action === 'accounts') {

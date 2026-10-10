@@ -4,6 +4,25 @@ const PUB = 'wss://api.derivws.com/trading/v1/options/ws/public' // market data,
 const APP_ID = import.meta.env.VITE_DERIV_APP_ID
 const redirectUri = () => window.location.origin + '/'
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+// token lives in localStorage so closing the tab/browser does not log you out
+const store = {
+  get: k => { try { return localStorage.getItem(k) } catch { return null } },
+  set: (k, v) => { try { localStorage.setItem(k, v) } catch { /* ignore */ } },
+  del: k => { try { localStorage.removeItem(k) } catch { /* ignore */ } },
+}
+const saveTok = j => {
+  store.set('tok', j.access_token)
+  if (j.refresh_token) store.set('rtok', j.refresh_token)
+  if (j.expires_in) store.set('tokExp', String(Date.now() + j.expires_in * 1000)); else store.del('tokExp')
+}
+let refreshing = null
+const refreshToken = () => { // standard OAuth2 refresh; returns the new access token or null
+  if (!refreshing) refreshing = (async () => {
+    const rt = store.get('rtok'); if (!rt) return null
+    try { const j = await api({ action: 'refresh', refresh_token: rt }); if (!j.access_token) return null; saveTok(j); return j.access_token } catch { return null }
+  })().finally(() => { refreshing = null })
+  return refreshing
+}
 const lim = v => (+v > 0 ? +v : Infinity) // blank / 0 = no limit
 const api = async body => {
   const r = await fetch('/api/deriv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -365,34 +384,44 @@ export default function App() {
     if (signup) q.set('prompt', 'registration')
     window.location.href = 'https://auth.deriv.com/oauth2/auth?' + q
   }
-  const logout = () => { sessionStorage.removeItem('tok'); setAccts([]); setAcct(null); setBalance(null); setRun(false); connect(PUB, false) }
+  const logout = () => { ['tok', 'rtok', 'tokExp', 'accts', 'acctId'].forEach(k => store.del(k)); setAccts([]); setAcct(null); setBalance(null); setRun(false); connect(PUB, false) }
 
-  const useAccount = async (a, tok) => {
+  const useAccount = async (a, tok, retried = false) => {
     try {
-      setAcct(a); setRun(false); setBalance(null); sessionStorage.setItem('acctId', a.id)
+      setAcct(a); setRun(false); setBalance(null); store.set('acctId', a.id)
       const j = await withRetry(() => api({ action: 'otp', token: tok, accountId: a.id }), 'account')
       const url = j.data?.url
       if (!url) throw new Error('OTP url nehe: ' + JSON.stringify(j).slice(0, 200))
       R.current.cur = a.cur
       connect(url, true)
-    } catch (e) { addLog('❌ ' + e.message); setFail(true) }
+    } catch (e) {
+      const msg = String(e.message || e)
+      if (/^40[13]/.test(msg) && !retried) { const nt = await refreshToken(); if (nt) return useAccount(a, nt, true) }
+      addLog('❌ ' + msg); setFail(true)
+    }
   }
-  const retryNow = () => { setFail(false); const t = sessionStorage.getItem('tok'); if (!t) return; accts.length ? useAccount(acct || accts[0], t) : loadAccounts(t) }
-  const loadAccounts = async tok => {
+  const retryNow = () => { setFail(false); const t = store.get('tok'); if (!t) return; accts.length ? useAccount(acct || accts[0], t) : loadAccounts(t) }
+  const loadAccounts = async (tok0, refreshed = false) => {
+    let tok = tok0
+    const exp = +(store.get('tokExp') || 0)
+    if (exp && Date.now() > exp - 60000) { const nt = await refreshToken(); if (nt) tok = nt } // refresh before it expires
     let cached = null
-    try { cached = JSON.parse(sessionStorage.getItem('accts') || 'null') } catch { /* ignore */ }
-    const want = sessionStorage.getItem('acctId')
+    try { cached = JSON.parse(store.get('accts') || 'null') } catch { /* ignore */ }
+    const want = store.get('acctId')
     if (cached?.length) { setAccts(cached); useAccount(cached.find(a => a.id === want) || cached.find(a => a.demo) || cached[0], tok) } // no waiting for the accounts call
     try {
       const j = await withRetry(() => api({ action: 'accounts', token: tok }), 'accounts')
       const list = (Array.isArray(j.data) ? j.data : j.data?.accounts || j.accounts || []).map(norm).filter(a => a.id)
       if (!list.length) return addLog('❌ Accounts nehe: ' + JSON.stringify(j).slice(0, 250))
-      setAccts(list); sessionStorage.setItem('accts', JSON.stringify(list))
+      setAccts(list); store.set('accts', JSON.stringify(list))
       if (!cached?.length) useAccount(list.find(a => a.demo) || list[0], tok) // demo first = safer
     } catch (e) {
       const msg = String(e.message || e)
       if (cached?.length && !/^40[13]/.test(msg)) return // already connected from the saved list; refresh failed silently
-      if (/^40[13]/.test(msg)) { sessionStorage.removeItem('tok'); sessionStorage.removeItem('accts'); addLog('❌ Login expired — please log in again') }
+      if (/^40[13]/.test(msg)) {
+        if (!refreshed) { const nt = await refreshToken(); if (nt) return loadAccounts(nt, true) }
+        ['tok', 'rtok', 'tokExp', 'accts'].forEach(k => store.del(k)); addLog('❌ Login expired — please log in again')
+      }
       else addLog('❌ Deriv unavailable (' + msg.slice(0, 90) + ') — press Retry')
       setFail(true)
     }
@@ -405,10 +434,10 @@ export default function App() {
       window.history.replaceState({}, '', window.location.pathname)
       if (p.get('state') !== saved.state) return addLog('❌ State mismatch, login again')
       withRetry(() => api({ action: 'token', code, verifier: saved.v, redirect_uri: redirectUri() }), 'login')
-        .then(j => { sessionStorage.setItem('tok', j.access_token); loadAccounts(j.access_token) })
+        .then(j => { saveTok(j); loadAccounts(j.access_token) })
         .catch(e => { addLog('❌ Login failed: ' + String(e.message).slice(0, 120) + ' — please log in again'); setFail(true) })
     } else {
-      const t = sessionStorage.getItem('tok'); if (t) loadAccounts(t)
+      const t = store.get('tok'); if (t) loadAccounts(t)
     }
   }, [])
 
@@ -418,7 +447,7 @@ export default function App() {
   }, [cfg.symbol, cfg.growth, cfg.stake])
 
   const set = k => e => setCfg({ ...cfg, [k]: e.target.value })
-  const tok = sessionStorage.getItem('tok')
+  const tok = store.get('tok')
   const live = acct && !acct.demo
   const trading = !!acct && R.current.trading
 
