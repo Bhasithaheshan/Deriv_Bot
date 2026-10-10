@@ -26,16 +26,21 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
 
   const draw = () => {
     const W = 900, H = 400, L = 8, RP = 86, T = 16, B = 26
-    const vals = ticks.map(t => t.q).concat(bar ? [bar.high, bar.low] : [])
+    const n = ticks.length, last = ticks[n - 1]
+    let hi = null, lo = null, bd = 0 // barrier box follows the latest tick instantly (no waiting for the next proposal)
+    if (bar) {
+      const ctr = (bar.high + bar.low) / 2; bd = (bar.high - bar.low) / 2
+      if (Math.abs(ctr - last.q) <= 1e-7 * Math.max(1, Math.abs(last.q))) { hi = bar.high; lo = bar.low }
+      else { const pct = bd / ctr; hi = last.q * (1 + pct); lo = last.q * (1 - pct); bd = last.q * pct }
+    }
+    const vals = ticks.map(t => t.q).concat(bar ? [hi, lo] : [])
     let mn = Math.min(...vals), mx = Math.max(...vals)
     const pad = (mx - mn || 1) * 0.08; mn -= pad; mx += pad
     const m = Math.max(1, Math.sqrt(vis / 60)) // zooming out also widens the price scale
     const c = (mn + mx) / 2, half = ((mx - mn) / 2) * m; mn = c - half; mx = c + half
     const pw = W - RP, xl = L + (pw - L) * 0.8
     const y = v => T + ((mx - v) / (mx - mn)) * (H - T - B)
-    const n = ticks.length
     const x = i => L + (i / (n - 1)) * (xl - L)
-    const last = ticks[n - 1]
     const pts = ticks.map((t, i) => `${x(i)},${y(t.q)}`).join(' ')
     // "nice" round price levels (1 / 2 / 5 x 10^k)
     const raw = (mx - mn) / 5, pow = 10 ** Math.floor(Math.log10(raw)), f = raw / pow
@@ -69,11 +74,20 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
           <text key={k} x={Math.min(Math.max(x(i), 30), pw - 30)} y={H - 8} textAnchor="middle" fontSize="11" fill="#5d6878">{fmt(ticks[i].t)}</text>
         ))}
         <g clipPath="url(#plot)">
-          {bar && <>
-            <rect x="0" y={y(bar.high)} width={pw} height={Math.max(y(bar.low) - y(bar.high), 1)} fill={hit ? 'rgba(255,60,60,.22)' : 'rgba(0,200,90,.14)'} />
-            <line x1="0" x2={pw} y1={y(bar.high)} y2={y(bar.high)} stroke={hit ? '#ff4d4d' : '#12b54f'} strokeWidth={hit ? 2 : 1} />
-            <line x1="0" x2={pw} y1={y(bar.low)} y2={y(bar.low)} stroke={hit ? '#ff4d4d' : '#12b54f'} strokeWidth={hit ? 2 : 1} />
-          </>}
+          {bar && (() => {
+            const col = hit ? '#ff4d4d' : '#12b54f', x0 = x(n - 1), dec = bd < 1 ? 4 : 3
+            return (
+              <g>
+                <line x1={x0} x2={x0} y1={T} y2={H - B} stroke="#2bb3a3" strokeDasharray="2 4" />
+                <rect x={x0} y={y(hi)} width={Math.max(pw - x0, 1)} height={Math.max(y(lo) - y(hi), 1)} fill={hit ? 'rgba(255,60,60,.22)' : 'rgba(0,200,90,.14)'} />
+                <line x1={x0} x2={pw} y1={y(hi)} y2={y(hi)} stroke={col} strokeWidth={hit ? 2 : 1.2} />
+                <line x1={x0} x2={pw} y1={y(lo)} y2={y(lo)} stroke={col} strokeWidth={hit ? 2 : 1.2} />
+                <circle cx={x0} cy={y(hi)} r="2.5" fill={col} /><circle cx={x0} cy={y(lo)} r="2.5" fill={col} />
+                <text x={pw - 6} y={y(hi) - 6} textAnchor="end" fontSize="12" fill={col}>+{bd.toFixed(dec)}</text>
+                <text x={pw - 6} y={y(lo) + 16} textAnchor="end" fontSize="12" fill={col}>-{bd.toFixed(dec)}</text>
+              </g>
+            )
+          })()}
           <polygon points={`${x(0)},${H - B} ${pts} ${x(n - 1)},${H - B}`} fill="url(#fillg)" />
           <polyline fill="none" stroke="#e8eef5" strokeWidth="1.6" strokeLinejoin="round" points={pts} />
           <line x1={x(n - 1)} x2={pw} y1={y(last.q)} y2={y(last.q)} stroke="#cfd8dc" strokeWidth="1.4" />
@@ -89,8 +103,8 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
               : <circle key={k} cx={cx} cy={cy} r="6" fill="none" stroke={mk.kind === 'win' ? '#1fd15a' : '#ff4d4d'} strokeWidth="2.5" />
           })}
         </g>
-        {bar && <Box yy={Math.min(Math.max(y(bar.high), 12), H - B - 12)} text={bar.high.toFixed(3)} bg="#2a9df4" fg="#fff" />}
-        {bar && <Box yy={Math.min(Math.max(y(bar.low), 12), H - B - 12)} text={bar.low.toFixed(3)} bg="#2a9df4" fg="#fff" />}
+        {bar && <Box yy={Math.min(Math.max(y(hi), 12), H - B - 12)} text={hi.toFixed(3)} bg="#2a9df4" fg="#fff" />}
+        {bar && <Box yy={Math.min(Math.max(y(lo), 12), H - B - 12)} text={lo.toFixed(3)} bg="#2a9df4" fg="#fff" />}
         <Box yy={Math.min(Math.max(y(last.q), 12), H - B - 12)} text={last.q.toFixed(2)} bg="#fff" fg="#111" />
       </svg>
     )
@@ -161,7 +175,7 @@ export default function App() {
   const addMark = (t, kind) => setMarks(ms => [...ms, { t, kind }].slice(-40))
   const subProposal = () => {
     const r = R.current
-    r.pid = null; r.bar = null; setBar(null)
+    r.pid = null; r.bar = null // keep the drawn box until the new proposal arrives (no flicker)
     if (r.pendingSub && Date.now() - (r.pendAt || 0) < 3000) return // waiting for a forget reply; it will request with the latest settings
     if (r.reqPending) { r.redo = true; return } // a request is in flight; redo once it answers
     r.reqAt = Date.now()
@@ -173,6 +187,8 @@ export default function App() {
     const key = `${c.symbol}|${c.growth}|${c.stake}`
     if (r.subKey === key) return // nothing changed -> don't spam Deriv (rate limits)
     r.subKey = key
+    const gk = c.symbol + '|' + c.growth
+    if (r.gk !== gk) { r.gk = gk; r.pct = null; r.lastQ = null; setBar(null) } // different market / growth rate -> different barrier
     if (r.tickSym !== c.symbol) { // market changed (or first connect on this socket)
       if (r.lastSym !== c.symbol) { r.since = 999; r.lastStay = null; r.hist = []; setTicks([]); setMarks([]); setStreaks([]) } // same market on a new socket: keep the chart
       if (r.ftick) { /* a forget-all is already in flight; its reply requests the latest symbol */ }
@@ -196,7 +212,9 @@ export default function App() {
     if (epoch && r.lastT && epoch <= r.lastT) return // already have this tick (history overlap)
     setTicks(t => [...t.slice(-299), { q, t: epoch || Date.now() / 1000 }])
     r.lastT = epoch || Date.now() / 1000
-    if (r.bar && Date.now() - (r.propAt || 0) < 5000 && (q >= r.bar.high || q <= r.bar.low)) flashRed()
+    const prevQ = r.lastQ; r.lastQ = q
+    // barrier = previous spot +/- pct, so a hit is |move| >= pct * previous price (works even before the new proposal arrives)
+    if (prevQ != null && r.pct && Math.abs(q - prevQ) >= r.pct * prevQ - 1e-9) { r.lastBreakAt = Date.now(); flashRed() }
     if (r.open) { // contract running: count ticks ourselves, sell after entry tick + target ticks
       r.inTicks = (r.inTicks || 0) + 1
       if (r.inTicks >= +c.target + 1 && !r.selling) { r.selling = true; send({ sell: r.open, price: 0 }) }
@@ -260,7 +278,7 @@ export default function App() {
         if (m.subscription?.id) r.tickSub = m.subscription.id
         r.lastTickAt = Date.now()
         const arr = h.prices.map((q, i) => ({ q: +q, t: +h.times[i] }))
-        r.lastT = arr[arr.length - 1].t
+        r.lastT = arr[arr.length - 1].t; r.lastQ = arr[arr.length - 1].q
         setTicks(arr.slice(-300))
         break
       }
@@ -271,11 +289,11 @@ export default function App() {
         r.pid = m.proposal.id; r.subId = m.subscription?.id || r.subId; r.propAt = Date.now()
         r.ask = +m.proposal.ask_price || null; r.propStake = m.echo_req?.amount != null ? +m.echo_req.amount : null
         if (r.redo) { r.redo = false; subProposal(); break } // settings changed while request was in flight
-        if (d.high_barrier) { r.bar = { high: +d.high_barrier, low: +d.low_barrier }; setBar(r.bar) }
+        if (d.high_barrier) { r.bar = { high: +d.high_barrier, low: +d.low_barrier }; setBar(r.bar); r.pct = (r.bar.high - r.bar.low) / (r.bar.high + r.bar.low) }
         // Deriv's own "ticks stayed in" list: [current streak, previous streaks...] (same numbers as DTrader)
         if (Array.isArray(d.ticks_stayed_in) && d.ticks_stayed_in.length) {
           r.hasStay = true; r.since = +d.ticks_stayed_in[0]
-          if (r.lastStay != null && r.since < r.lastStay) { r.hist = [r.lastStay, ...(r.hist || [])].slice(0, 12); flashRed() }
+          if (r.lastStay != null && r.since < r.lastStay && Date.now() - (r.lastBreakAt || 0) < 3000) r.hist = [r.lastStay, ...(r.hist || [])].slice(0, 12) // only a real break adds a streak
           r.lastStay = r.since
           setStreaks(d.ticks_stayed_in.length > 1 ? d.ticks_stayed_in.slice(0, 12).map(Number) : [r.since, ...(r.hist || [])])
           maybeEnter() // proposal is fresh right now, so buy immediately
