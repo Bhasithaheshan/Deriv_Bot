@@ -468,42 +468,67 @@ export default function App() {
     return () => clearTimeout(id)
   }, [cfg.symbol, cfg.growth, cfg.stake])
 
-  // ---- Market scanner: its own public socket watches all 5 markets (history + live ticks + barrier %)
+  // ---- Market scanner: its own public socket watches all 5 markets (history + live ticks + barrier %).
+  // Requests go out ONE AT A TIME (queue) and failed markets are retried, so Deriv rate limits don't leave markets empty.
   useEffect(() => {
     if (!cfg.scanOn) { setScan({}); return }
     const syms = Object.values(MARKETS), D = {}
-    syms.forEach(sy => { D[sy] = { px: [], pct: null, t: 0 } })
-    const w = new WebSocket(PUB), timers = []
+    syms.forEach(sy => { D[sy] = { px: [], pct: null, t: 0, sub: false, err: '', warned: 0 } })
+    const w = new WebSocket(PUB)
+    let dead = false, cur = null, timer = null
+    const q = [], queued = new Set()
     const send1 = o => w.readyState === 1 && w.send(JSON.stringify(o))
-    w.onopen = () => syms.forEach((sy, i) => { // stagger requests to stay under rate limits
-      timers.push(setTimeout(() => send1({ ticks_history: sy, end: 'latest', count: 300, style: 'ticks', subscribe: 1 }), i * 250))
-      timers.push(setTimeout(() => send1({ proposal: 1, amount: 1, basis: 'stake', contract_type: 'ACCU', currency: 'USD', growth_rate: +C.current.growth, underlying_symbol: sy }), i * 250 + 120))
-    })
+    const enqueue = (type, sy) => { const k = type + sy; if (queued.has(k)) return; queued.add(k); q.push({ type, sy }) }
+    const finish = (type, sy, err) => {
+      if (!cur || cur.type !== type || cur.sy !== sy) return
+      clearTimeout(timer); queued.delete(type + sy); cur = null
+      if (err) { D[sy].err = err; if (Date.now() - D[sy].warned > 30000) { D[sy].warned = Date.now(); addLog(`⚠️ Scanner ${sy}: ${err}`) } }
+      setTimeout(pump, 350) // small gap between requests
+    }
+    const pump = () => {
+      if (dead || cur || w.readyState !== 1) return
+      const t = q.shift(); if (!t) return
+      cur = t
+      send1(t.type === 'h'
+        ? { ticks_history: t.sy, end: 'latest', count: 300, style: 'ticks', subscribe: 1 }
+        : { proposal: 1, amount: 1, basis: 'stake', contract_type: 'ACCU', currency: 'USD', growth_rate: +C.current.growth, underlying_symbol: t.sy })
+      timer = setTimeout(() => finish(t.type, t.sy, 'timeout'), 5000)
+    }
+    const fill = () => syms.forEach(sy => { const d = D[sy]; if (!d.sub) enqueue('h', sy); if (!d.pct) enqueue('p', sy) })
+    w.onopen = () => { fill(); pump() }
     w.onmessage = e => {
-      const m = JSON.parse(e.data)
-      if (m.error) return
+      const m = JSON.parse(e.data), er = m.echo_req || {}
+      if (m.error) {
+        const sy = er.ticks_history || er.underlying_symbol
+        if (sy && D[sy]) {
+          if (/already subscribed/i.test(m.error.message || '')) { D[sy].sub = true; finish('h', sy) }
+          else finish(er.ticks_history ? 'h' : 'p', sy, m.error.message)
+        }
+        return
+      }
       if (m.msg_type === 'history' || m.msg_type === 'ticks_history') {
-        const d = D[m.echo_req?.ticks_history]
-        if (d && m.history?.prices) { d.px = m.history.prices.map(Number).slice(-300); d.t = +m.history.times[m.history.times.length - 1] }
+        const sy = er.ticks_history, d = D[sy]
+        if (d && m.history?.prices) { d.px = m.history.prices.map(Number).slice(-300); d.t = +m.history.times[m.history.times.length - 1]; d.sub = true; d.err = ''; finish('h', sy) }
       } else if (m.msg_type === 'tick') {
-        const d = D[m.echo_req?.ticks_history || m.echo_req?.ticks || m.tick.symbol]
+        const d = D[er.ticks_history || er.ticks || m.tick.symbol]
         if (d && m.tick.epoch > d.t) { d.t = m.tick.epoch; d.px.push(+m.tick.quote); if (d.px.length > 300) d.px.shift() }
       } else if (m.msg_type === 'proposal') {
-        const d = D[m.echo_req?.underlying_symbol], cd = m.proposal?.contract_details
-        if (d && cd?.high_barrier) d.pct = (+cd.high_barrier - +cd.low_barrier) / (+cd.high_barrier + +cd.low_barrier)
+        const sy = er.underlying_symbol, d = D[sy], cd = m.proposal?.contract_details
+        if (d && cd?.high_barrier) { d.pct = (+cd.high_barrier - +cd.low_barrier) / (+cd.high_barrier + +cd.low_barrier); d.err = ''; finish('p', sy) }
       }
     }
     const iv = setInterval(() => {
       const out = {}
-      syms.forEach(sy => { const d = D[sy]; if (d.pct && d.px.length > 30) out[sy] = streakStats(d.px, d.pct) })
+      syms.forEach(sy => { const d = D[sy]; out[sy] = d.pct && d.px.length > 30 ? streakStats(d.px, d.pct) : { pending: true, err: d.err } })
       setScan(out)
     }, 1000)
+    const retry = setInterval(() => { fill(); pump() }, 8000) // markets that failed get requested again
     const ping = setInterval(() => send1({ ping: 1 }), 30000)
-    return () => { timers.forEach(clearTimeout); clearInterval(iv); clearInterval(ping); w.onopen = w.onmessage = w.onclose = null; w.close() }
+    return () => { dead = true; clearTimeout(timer); clearInterval(iv); clearInterval(retry); clearInterval(ping); w.onopen = w.onmessage = w.onclose = null; w.close() }
   }, [cfg.scanOn, cfg.growth])
 
   const minS = +cfg.minStreak || 0
-  const rows = Object.entries(MARKETS).map(([name, sy]) => { const d = scan[sy]; return { name, sy, ...d, ok: !!d && d.avg >= minS } })
+  const rows = Object.entries(MARKETS).map(([name, sy]) => { const d = scan[sy]; return { name, sy, ...d, ok: !!d && !d.pending && d.avg >= minS } })
   const best = rows.filter(r => r.ok).sort((a, b) => b.avg - a.avg)[0]
   const curRow = rows.find(r => r.sy === cfg.symbol)
   R.current.marketOk = !(cfg.scanOn && cfg.autoSwitch) || !!curRow?.ok // auto mode: only trade markets that pass the filter
@@ -517,7 +542,7 @@ export default function App() {
     addLog(`🔁 Switched to ${best.name} (avg streak ${best.avg.toFixed(0)})`)
   }, [scan])
 
-  const set = k => e => setCfg({ ...cfg, [k]: e.target.value })
+  const set = k => e => { const v = e.target.value; setCfg(c => ({ ...c, [k]: v })) }
   const tok = store.get('tok')
   const live = acct && !acct.demo
   const trading = !!acct && R.current.trading
@@ -577,8 +602,8 @@ export default function App() {
           )}
           <div className="scan">
             <div className="scanhead">
-              <label className="chk"><input type="checkbox" checked={cfg.scanOn} onChange={e => setCfg({ ...cfg, scanOn: e.target.checked })} /> Market scanner</label>
-              <label className="chk"><input type="checkbox" checked={cfg.autoSwitch} disabled={!cfg.scanOn} onChange={e => setCfg({ ...cfg, autoSwitch: e.target.checked })} /> Auto-switch to best</label>
+              <label className="chk"><input type="checkbox" checked={cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, scanOn: v })) }} /> Market scanner</label>
+              <label className="chk"><input type="checkbox" checked={cfg.autoSwitch} disabled={!cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, autoSwitch: v })) }} /> Auto-switch to best</label>
               <span className="chk">Skip if avg streak &lt; <input type="number" min="0" className="mini-in" value={cfg.minStreak} onChange={set('minStreak')} /></span>
             </div>
             {cfg.scanOn && (
@@ -586,10 +611,10 @@ export default function App() {
                 <thead><tr><th>Market</th><th>Now</th><th>Last</th><th>Avg (3)</th><th></th></tr></thead>
                 <tbody>
                   {rows.map(r => (
-                    <tr key={r.sy} className={r.sy === cfg.symbol ? 'cur' : ''} onClick={() => setCfg({ ...cfg, symbol: r.sy })}>
+                    <tr key={r.sy} className={r.sy === cfg.symbol ? 'cur' : ''} onClick={() => setCfg(c => ({ ...c, symbol: r.sy }))}>
                       <td>{r.sy === cfg.symbol ? '● ' : ''}{r.name.replace(' Index', '')}</td>
                       <td>{r.cur ?? '…'}</td><td>{r.last ?? '…'}</td><td>{r.avg != null ? r.avg.toFixed(1) : '…'}</td>
-                      <td className={best?.sy === r.sy ? 'g' : r.avg != null && !r.ok ? 'r' : ''}>{best?.sy === r.sy ? 'BEST ★' : r.avg == null ? '' : r.ok ? 'ok' : 'skip'}</td>
+                      <td className={best?.sy === r.sy ? 'g' : r.avg != null && !r.ok ? 'r' : ''}>{best?.sy === r.sy ? 'BEST ★' : r.avg == null ? (r.err ? 'retrying…' : '') : r.ok ? 'ok' : 'skip'}</td>
                     </tr>
                   ))}
                 </tbody>
