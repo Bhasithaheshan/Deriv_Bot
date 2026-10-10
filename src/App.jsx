@@ -171,6 +171,18 @@ export default function App() {
     if (r.noHist) send({ ticks: c.symbol, subscribe: 1 })
     else send({ ticks_history: c.symbol, end: 'latest', count: 150, style: 'ticks', subscribe: 1 }) // history now + live ticks after
   }
+  const recalcStreaks = () => {
+    const r = R.current, px = r.px || []
+    if (!r.pct || px.length < 2) return
+    const out = []; let cur = 0
+    for (let i = 1; i < px.length; i++) {
+      if (Math.abs(px[i] - px[i - 1]) >= r.pct * px[i - 1] - 1e-9) { out.push(cur); cur = 0 } // barrier hit (back-to-back hits give 0)
+      else cur++
+    }
+    out.shift() // oldest streak is cut off by the window
+    r.since = cur
+    setStreaks([cur, ...out.reverse()].slice(0, 12))
+  }
   const flashRed = () => { const r = R.current; setHit(true); clearTimeout(r.ft); r.ft = setTimeout(() => setHit(false), 1000) }
   const addMark = (t, kind) => setMarks(ms => [...ms, { t, kind }].slice(-40))
   const subProposal = () => {
@@ -190,7 +202,7 @@ export default function App() {
     const gk = c.symbol + '|' + c.growth
     if (r.gk !== gk) { r.gk = gk; r.pct = null; r.lastQ = null; setBar(null) } // different market / growth rate -> different barrier
     if (r.tickSym !== c.symbol) { // market changed (or first connect on this socket)
-      if (r.lastSym !== c.symbol) { r.since = 999; r.lastStay = null; r.hist = []; setTicks([]); setMarks([]); setStreaks([]) } // same market on a new socket: keep the chart
+      if (r.lastSym !== c.symbol) { r.since = 999; r.lastStay = null; r.hist = []; r.px = []; setTicks([]); setMarks([]); setStreaks([]) } // same market on a new socket: keep the chart
       if (r.ftick) { /* a forget-all is already in flight; its reply requests the latest symbol */ }
       else if (r.tickSub) { send({ forget: r.tickSub }); r.tickSub = null; reqTicks() } // different symbol: no need to wait
       else if (r.tickSym) { r.ftick = 'all'; send({ forget_all: 'ticks' }) } // old stream's id unknown
@@ -212,6 +224,7 @@ export default function App() {
     if (epoch && r.lastT && epoch <= r.lastT) return // already have this tick (history overlap)
     setTicks(t => [...t.slice(-299), { q, t: epoch || Date.now() / 1000 }])
     r.lastT = epoch || Date.now() / 1000
+    r.px = [...(r.px || []).slice(-299), q]; recalcStreaks()
     const prevQ = r.lastQ; r.lastQ = q
     // barrier = previous spot +/- pct, so a hit is |move| >= pct * previous price (works even before the new proposal arrives)
     if (prevQ != null && r.pct && Math.abs(q - prevQ) >= r.pct * prevQ - 1e-9) { r.lastBreakAt = Date.now(); flashRed() }
@@ -279,6 +292,7 @@ export default function App() {
         r.lastTickAt = Date.now()
         const arr = h.prices.map((q, i) => ({ q: +q, t: +h.times[i] }))
         r.lastT = arr[arr.length - 1].t; r.lastQ = arr[arr.length - 1].q
+        r.px = arr.map(a => a.q).slice(-300); recalcStreaks()
         setTicks(arr.slice(-300))
         break
       }
@@ -290,14 +304,7 @@ export default function App() {
         r.ask = +m.proposal.ask_price || null; r.propStake = m.echo_req?.amount != null ? +m.echo_req.amount : null
         if (r.redo) { r.redo = false; subProposal(); break } // settings changed while request was in flight
         if (d.high_barrier) { r.bar = { high: +d.high_barrier, low: +d.low_barrier }; setBar(r.bar); r.pct = (r.bar.high - r.bar.low) / (r.bar.high + r.bar.low) }
-        // Deriv's own "ticks stayed in" list: [current streak, previous streaks...] (same numbers as DTrader)
-        if (Array.isArray(d.ticks_stayed_in) && d.ticks_stayed_in.length) {
-          r.hasStay = true; r.since = +d.ticks_stayed_in[0]
-          if (r.lastStay != null && r.since < r.lastStay && Date.now() - (r.lastBreakAt || 0) < 3000) r.hist = [r.lastStay, ...(r.hist || [])].slice(0, 12) // only a real break adds a streak
-          r.lastStay = r.since
-          setStreaks(d.ticks_stayed_in.length > 1 ? d.ticks_stayed_in.slice(0, 12).map(Number) : [r.since, ...(r.hist || [])])
-          maybeEnter() // proposal is fresh right now, so buy immediately
-        }
+        if (r.pct) { r.hasStay = true; recalcStreaks(); maybeEnter() } // streak counted from prices; buy right away on a fresh proposal
         break
       }
       case 'buy': addMark(m.buy.start_time || r.lastT, 'buy'); r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
