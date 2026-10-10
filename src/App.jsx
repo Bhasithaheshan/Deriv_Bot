@@ -351,7 +351,8 @@ export default function App() {
   const connect = (url, trading) => {
     const r = R.current
     r.url = url; r.trading = trading; r.subKey = null; r.tickSub = null; r.tickSym = null; r.ftick = null; r.connAt = Date.now(); r.lastTickAt = 0; r.subId = null; r.pendingSub = false; r.reqPending = false; r.redo = false; r.pid = null; r.bar = null
-    const old = ws.current; ws.current = null; old?.close()
+    const old = ws.current; ws.current = null
+    if (old) { old.onopen = old.onmessage = old.onerror = old.onclose = null; old.close() } // retired socket must not log errors
     const s = new WebSocket(url); ws.current = s
     s.onopen = () => {
       addLog(trading ? 'Connected (trading)' : 'Connected (market data)')
@@ -369,7 +370,7 @@ export default function App() {
         setTimeout(() => ws.current === s && connect(PUB, false), d)
       } else { r.trading = false; setRun(false); setFail(true); addLog('⚠️ Trading connection lost — press Retry') }
     }
-    s.onerror = () => addLog('Socket error')
+    s.onerror = () => { if (ws.current === s) addLog('Socket error') } // ignore errors from replaced sockets
   }
 
   useEffect(() => {
