@@ -202,6 +202,15 @@ export default function App() {
     r.since = cur
     setStreaks([cur, ...out.reverse()].slice(0, 12))
   }
+  const resetBot = () => { // clear P/L + stuck flags so the bot can be started again (no page refresh needed)
+    const r = R.current
+    if (r.open) { addLog('⚠️ A trade is still open — wait until it closes, then press Reset'); return }
+    setRun(false)
+    r.pnl = 0; r.n = 0; r.busy = false; r.selling = false; r.inTicks = 0
+    setStats({ n: 0, pnl: 0 }); setMarks([])
+    subProposal() // fresh proposal stream
+    addLog('🔄 Bot reset — press Start bot')
+  }
   const flashRed = () => { const r = R.current; setHit(true); clearTimeout(r.ft); r.ft = setTimeout(() => setHit(false), 1000) }
   const addMark = (t, kind) => setMarks(ms => [...ms, { t, kind }].slice(-40))
   const subProposal = () => {
@@ -498,7 +507,7 @@ export default function App() {
           <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.q.toFixed(2)}</span></div>
           <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} vis={vis} onZoom={onZoom} onReset={onReset} />
           <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
-            <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b></span></div>
+            <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b> <button className="mini" onClick={resetBot} title="Reset P/L and bot state">↺ Reset</button></span></div>
           {streaks.length > 0 && (
             <div className="chips"><span className="lbl">Streaks</span>
               {streaks.map((v, i) => <span key={i} className={'chip' + (i === 0 ? ' cur' : '')}>{v}</span>)}
@@ -523,7 +532,12 @@ export default function App() {
           <button className={'cta' + (run ? ' stop' : '')} disabled={!trading}
             onClick={() => {
               if (!run && live && !confirm('REAL account! Start auto trading?')) return
-              if (!run) { R.current.pnl = 0; R.current.n = 0; setStats({ n: 0, pnl: 0 }) } // fresh P/L for each run
+              if (!run) { // every Start = fresh P/L and clean flags
+                const r = R.current
+                r.pnl = 0; r.n = 0; setStats({ n: 0, pnl: 0 })
+                if (!r.open) { r.busy = false; r.selling = false }
+                addLog(`▶ Bot started — waiting for a barrier hit${+cfg.wait ? ` + ${cfg.wait} ticks` : ''} (now ${r.since > 900 ? '-' : r.since} ticks since last hit)`)
+              }
               setRun(!run)
             }}>
             {run ? 'Stop bot' : tok ? 'Start bot' : 'Log in to start'}

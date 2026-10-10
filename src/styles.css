@@ -43,3 +43,5 @@ input,select{width:100%;padding:9px;background:#0e1116;color:#fff;border:1px sol
 .pgrid select,.pgrid input{min-width:0}
 @media(max-width:420px){.pgrid{grid-template-columns:1fr}}
 .conn{color:#8b95a5;font-size:14px}
+.mini{margin-left:8px;padding:3px 10px;border-radius:14px;border:1px solid #2a303a;background:#11151b;color:#cfd8dc;font-size:12px;cursor:pointer}
+.mini:hover{background:#1a212b}
