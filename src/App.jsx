@@ -23,16 +23,19 @@ const refreshToken = () => { // standard OAuth2 refresh; returns the new access 
   })().finally(() => { refreshing = null })
   return refreshing
 }
-// streak lengths from a price series: barrier hit when |move| >= pct * previous price
+// streak lengths from a price series: barrier hit when |move| >= pct * previous price.
+// Scanner decision uses the last 30 completed streaks (average + median).
 const streakStats = (px, pct) => {
   const out = []; let cur = 0
   for (let i = 1; i < px.length; i++) {
     if (Math.abs(px[i] - px[i - 1]) >= pct * px[i - 1] - 1e-9) { out.push(cur); cur = 0 } else cur++
   }
   out.shift() // oldest streak is cut off by the window
-  const last3 = out.slice(-3)
-  const avg = last3.length ? last3.reduce((a, b) => a + b, 0) / last3.length : 0
-  return { cur, last: out.length ? out[out.length - 1] : 0, avg, n: out.length }
+  const L = out.slice(-30), k = L.length
+  const avg = k ? L.reduce((x, y) => x + y, 0) / k : 0
+  const sorted = [...L].sort((x, y) => x - y), mid = Math.floor(k / 2)
+  const med = k ? (k % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2) : 0
+  return { cur, last: out.length ? out[out.length - 1] : 0, avg, med, k }
 }
 const lim = v => (+v > 0 ? +v : Infinity) // blank / 0 = no limit
 const api = async body => {
@@ -153,7 +156,7 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
 }
 
 export default function App() {
-  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, scanOn: false, autoSwitch: false, minStreak: 10 })
+  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, scanOn: false, autoSwitch: false, minStreak: 10, scoreBy: 'avg' })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
   const [bar, setBar] = useState(null)
@@ -473,7 +476,7 @@ export default function App() {
   useEffect(() => {
     if (!cfg.scanOn) { setScan({}); return }
     const syms = Object.values(MARKETS), D = {}
-    syms.forEach(sy => { D[sy] = { px: [], pct: null, t: 0, sub: false, err: '', warned: 0 } })
+    syms.forEach(sy => { D[sy] = { px: [], pct: null, t: 0, sub: false, err: '', warned: 0, count: 3000 } })
     const w = new WebSocket(PUB)
     let dead = false, cur = null, timer = null
     const q = [], queued = new Set()
@@ -490,7 +493,7 @@ export default function App() {
       const t = q.shift(); if (!t) return
       cur = t
       send1(t.type === 'h'
-        ? { ticks_history: t.sy, end: 'latest', count: 300, style: 'ticks', subscribe: 1 }
+        ? { ticks_history: t.sy, end: 'latest', count: D[t.sy].count, style: 'ticks', subscribe: 1 }
         : { proposal: 1, amount: 1, basis: 'stake', contract_type: 'ACCU', currency: 'USD', growth_rate: +C.current.growth, underlying_symbol: t.sy })
       timer = setTimeout(() => finish(t.type, t.sy, 'timeout'), 5000)
     }
@@ -502,16 +505,19 @@ export default function App() {
         const sy = er.ticks_history || er.underlying_symbol
         if (sy && D[sy]) {
           if (/already subscribed/i.test(m.error.message || '')) { D[sy].sub = true; finish('h', sy) }
-          else finish(er.ticks_history ? 'h' : 'p', sy, m.error.message)
+          else {
+            if (er.ticks_history && !/rate limit/i.test(m.error.message || '')) D[sy].count = Math.max(500, Math.floor(D[sy].count / 2)) // maybe too many ticks requested
+            finish(er.ticks_history ? 'h' : 'p', sy, m.error.message)
+          }
         }
         return
       }
       if (m.msg_type === 'history' || m.msg_type === 'ticks_history') {
         const sy = er.ticks_history, d = D[sy]
-        if (d && m.history?.prices) { d.px = m.history.prices.map(Number).slice(-300); d.t = +m.history.times[m.history.times.length - 1]; d.sub = true; d.err = ''; finish('h', sy) }
+        if (d && m.history?.prices) { d.px = m.history.prices.map(Number).slice(-5000); d.t = +m.history.times[m.history.times.length - 1]; d.sub = true; d.err = ''; finish('h', sy) }
       } else if (m.msg_type === 'tick') {
         const d = D[er.ticks_history || er.ticks || m.tick.symbol]
-        if (d && m.tick.epoch > d.t) { d.t = m.tick.epoch; d.px.push(+m.tick.quote); if (d.px.length > 300) d.px.shift() }
+        if (d && m.tick.epoch > d.t) { d.t = m.tick.epoch; d.px.push(+m.tick.quote); if (d.px.length > 5000) d.px.shift() }
       } else if (m.msg_type === 'proposal') {
         const sy = er.underlying_symbol, d = D[sy], cd = m.proposal?.contract_details
         if (d && cd?.high_barrier) { d.pct = (+cd.high_barrier - +cd.low_barrier) / (+cd.high_barrier + +cd.low_barrier); d.err = ''; finish('p', sy) }
@@ -519,7 +525,10 @@ export default function App() {
     }
     const iv = setInterval(() => {
       const out = {}
-      syms.forEach(sy => { const d = D[sy]; out[sy] = d.pct && d.px.length > 30 ? streakStats(d.px, d.pct) : { pending: true, err: d.err } })
+      syms.forEach(sy => {
+        const d = D[sy], st = d.pct && d.px.length > 30 ? streakStats(d.px, d.pct) : null
+        out[sy] = st && st.k >= 10 ? st : { pending: true, err: d.err } // need at least 10 completed streaks
+      })
       setScan(out)
     }, 1000)
     const retry = setInterval(() => { fill(); pump() }, 8000) // markets that failed get requested again
@@ -528,18 +537,21 @@ export default function App() {
   }, [cfg.scanOn, cfg.growth])
 
   const minS = +cfg.minStreak || 0
-  const rows = Object.entries(MARKETS).map(([name, sy]) => { const d = scan[sy]; return { name, sy, ...d, ok: !!d && !d.pending && d.avg >= minS } })
-  const best = rows.filter(r => r.ok).sort((a, b) => b.avg - a.avg)[0]
+  const rows = Object.entries(MARKETS).map(([name, sy]) => {
+    const d = scan[sy], score = d && !d.pending ? (cfg.scoreBy === 'med' ? d.med : d.avg) : null
+    return { name, sy, ...d, score, ok: score != null && score >= minS }
+  })
+  const best = rows.filter(r => r.ok).sort((a, b) => b.score - a.score)[0]
   const curRow = rows.find(r => r.sy === cfg.symbol)
   R.current.marketOk = !(cfg.scanOn && cfg.autoSwitch) || !!curRow?.ok // auto mode: only trade markets that pass the filter
   useEffect(() => { // auto-switch to the best market (not while a trade is running, max once per 30s)
     if (!cfg.scanOn || !cfg.autoSwitch || !best || best.sy === cfg.symbol) return
     const r = R.current
     if (r.open || r.busy || Date.now() - (r.lastSwitch || 0) < 30000) return
-    if (curRow?.ok && best.avg < curRow.avg * 1.2) return // only switch if clearly better
+    if (curRow?.ok && best.score < curRow.score * 1.2) return // only switch if clearly better
     r.lastSwitch = Date.now()
     setCfg(c => ({ ...c, symbol: best.sy }))
-    addLog(`🔁 Switched to ${best.name} (avg streak ${best.avg.toFixed(0)})`)
+    addLog(`🔁 Switched to ${best.name} (${cfg.scoreBy === 'med' ? 'median' : 'avg'} of last 30 streaks: ${best.score.toFixed(0)})`)
   }, [scan])
 
   const set = k => e => { const v = e.target.value; setCfg(c => ({ ...c, [k]: v })) }
@@ -604,17 +616,18 @@ export default function App() {
             <div className="scanhead">
               <label className="chk"><input type="checkbox" checked={cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, scanOn: v })) }} /> Market scanner</label>
               <label className="chk"><input type="checkbox" checked={cfg.autoSwitch} disabled={!cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, autoSwitch: v })) }} /> Auto-switch to best</label>
-              <span className="chk">Skip if avg streak &lt; <input type="number" min="0" className="mini-in" value={cfg.minStreak} onChange={set('minStreak')} /></span>
+              <span className="chk">Score by <select className="mini-sel" value={cfg.scoreBy} onChange={set('scoreBy')}><option value="avg">Average</option><option value="med">Median</option></select> of last 30 streaks</span>
+              <span className="chk">Skip if score &lt; <input type="number" min="0" className="mini-in" value={cfg.minStreak} onChange={set('minStreak')} /></span>
             </div>
             {cfg.scanOn && (
               <table className="scantbl">
-                <thead><tr><th>Market</th><th>Now</th><th>Last</th><th>Avg (3)</th><th></th></tr></thead>
+                <thead><tr><th>Market</th><th>Now</th><th>Last</th><th>Avg (30)</th><th>Median (30)</th><th></th></tr></thead>
                 <tbody>
                   {rows.map(r => (
                     <tr key={r.sy} className={r.sy === cfg.symbol ? 'cur' : ''} onClick={() => setCfg(c => ({ ...c, symbol: r.sy }))}>
                       <td>{r.sy === cfg.symbol ? '● ' : ''}{r.name.replace(' Index', '')}</td>
-                      <td>{r.cur ?? '…'}</td><td>{r.last ?? '…'}</td><td>{r.avg != null ? r.avg.toFixed(1) : '…'}</td>
-                      <td className={best?.sy === r.sy ? 'g' : r.avg != null && !r.ok ? 'r' : ''}>{best?.sy === r.sy ? 'BEST ★' : r.avg == null ? (r.err ? 'retrying…' : '') : r.ok ? 'ok' : 'skip'}</td>
+                      <td>{r.cur ?? '…'}</td><td>{r.last ?? '…'}</td><td>{r.avg != null ? r.avg.toFixed(1) : '…'}</td><td>{r.med != null ? r.med.toFixed(1) : '…'}</td>
+                      <td className={best?.sy === r.sy ? 'g' : r.score != null && !r.ok ? 'r' : ''}>{best?.sy === r.sy ? 'BEST ★' : r.score == null ? (r.err ? 'retrying…' : '') : r.ok ? 'ok' : 'skip'}</td>
                     </tr>
                   ))}
                 </tbody>
