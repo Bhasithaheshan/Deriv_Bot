@@ -156,7 +156,7 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
 }
 
 export default function App() {
-  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, scanOn: false, autoSwitch: false, minStreak: 10, scoreBy: 'avg' })
+  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, scanOn: false, autoSwitch: false, minStreak: 10, scoreBy: 'avg', rotate: false })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
   const [bar, setBar] = useState(null)
@@ -218,6 +218,16 @@ export default function App() {
     out.shift() // oldest streak is cut off by the window
     r.since = cur
     setStreaks([cur, ...out.reverse()].slice(0, 12))
+  }
+  const rotateMarket = () => { // next trade goes to the next market (V10 -> V25 -> V50 -> V75 -> V100 -> V10 ...)
+    const r = R.current, syms = Object.values(MARKETS), cur = C.current.symbol
+    const ok = r.okSyms && r.okSyms.length ? r.okSyms : syms // scanner on: only markets that pass the filter
+    const i = syms.indexOf(cur); let next = null
+    for (let k = 1; k <= syms.length; k++) { const sy = syms[(i + k) % syms.length]; if (ok.includes(sy)) { next = sy; break } }
+    if (!next || next === cur) return
+    r.lastSwitch = Date.now()
+    setCfg(c => ({ ...c, symbol: next }))
+    addLog(`🔁 Next trade on ${Object.keys(MARKETS).find(k => MARKETS[k] === next)}`)
   }
   const resetBot = () => { // clear P/L + stuck flags so the bot can be started again (no page refresh needed)
     const r = R.current
@@ -299,6 +309,7 @@ export default function App() {
       addLog(`${p.profit >= 0 ? '✅ WIN' : '🔴 LOSS'}  ${(+p.profit).toFixed(2)}`)
       if (r.pnl >= lim(c.maxProfit)) { setRun(false); addLog(`🎯 Profit target reached (+${r.pnl.toFixed(2)}) — bot stopped`) }
       else if (r.pnl <= -lim(c.maxLoss)) { setRun(false); addLog(`⛔ Loss limit reached (${r.pnl.toFixed(2)}) — bot stopped`) }
+      if (c.rotate) rotateMarket()
       return
     }
   }
@@ -554,9 +565,10 @@ export default function App() {
   })
   const best = rows.filter(r => r.ok).sort((a, b) => b.score - a.score)[0]
   const curRow = rows.find(r => r.sy === cfg.symbol)
+  R.current.okSyms = cfg.scanOn && rows.filter(x => x.score != null).length >= 4 ? rows.filter(x => x.ok).map(x => x.sy) : null
   R.current.marketOk = !(cfg.scanOn && cfg.autoSwitch) || !!curRow?.ok // auto mode: only trade markets that pass the filter
   useEffect(() => { // auto-switch to the best market (not while a trade is running, max once per 30s)
-    if (!cfg.scanOn || !cfg.autoSwitch || !best || best.sy === cfg.symbol) return
+    if (!cfg.scanOn || !cfg.autoSwitch || cfg.rotate || !best || best.sy === cfg.symbol) return
     if (rows.filter(x => x.score != null).length < 4) return // wait until most markets are scanned (partial data = wrong "best")
     const r = R.current
     if (r.open || r.busy || Date.now() - (r.lastSwitch || 0) < 90000) return
@@ -627,7 +639,7 @@ export default function App() {
           <div className="scan">
             <div className="scanhead">
               <label className="chk"><input type="checkbox" checked={cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, scanOn: v })) }} /> Market scanner</label>
-              <label className="chk"><input type="checkbox" checked={cfg.autoSwitch} disabled={!cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, autoSwitch: v })) }} /> Auto-switch to best</label>
+              <label className="chk"><input type="checkbox" checked={cfg.autoSwitch} disabled={!cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, autoSwitch: v, rotate: v ? false : c.rotate })) }} /> Auto-switch to best</label>
               <span className="chk">Score by <select className="mini-sel" value={cfg.scoreBy} onChange={set('scoreBy')}><option value="avg">Average</option><option value="med">Median</option></select> of last 30 streaks</span>
               <span className="chk">Skip if score &lt; <input type="number" min="0" className="mini-in" value={cfg.minStreak} onChange={set('minStreak')} /></span>
             </div>
@@ -661,6 +673,10 @@ export default function App() {
             <div><label>Stop at profit (USD)</label><input type="number" min="0" value={cfg.maxProfit} onChange={set('maxProfit')} /></div>
             <div className="full"><label>Strategy: enter after barrier hit + wait N ticks (0 = immediately)</label>
               <select value={cfg.wait} onChange={set('wait')}>{[0, 1, 2, 3, 5, 8].map(t => <option key={t}>{t}</option>)}</select></div>
+            <div className="full rot">
+              <label className="rotl"><input type="checkbox" checked={cfg.rotate} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, rotate: v, autoSwitch: v ? false : c.autoSwitch })) }} /> 🔁 Rotate markets: after each trade, next trade on the next market</label>
+              <small>V10 → V25 → V50 → V75 → V100 → V10 …{cfg.scanOn ? ' (scanner on: markets that fail the filter are skipped)' : ''}</small>
+            </div>
           </div>
           <button className={'cta' + (run ? ' stop' : '')} disabled={!trading}
             onClick={() => {

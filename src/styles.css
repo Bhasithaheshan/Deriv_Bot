@@ -57,3 +57,8 @@ input,select{width:100%;padding:9px;background:#0e1116;color:#fff;border:1px sol
 .scantbl tr.cur td{background:#161c25}
 .scantbl tr:hover td{background:#1a212b}
 .mini-sel{width:auto !important;padding:3px 6px !important;font-size:12px}
+
+.rot{margin-top:10px}
+.rotl{display:flex;align-items:center;gap:8px;margin:0;font-size:13px;color:#cfd8dc;cursor:pointer}
+.pgrid .rotl input[type=checkbox]{width:auto;padding:0}
+.rot small{display:block;margin-top:4px;color:#8b95a5;font-size:12px}
