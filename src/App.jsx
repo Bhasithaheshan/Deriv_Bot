@@ -169,6 +169,8 @@ export default function App() {
   const [hit, setHit] = useState(false)
   const [menu, setMenu] = useState(false)   // account dropdown
   const [scan, setScan] = useState({}) // market scanner results
+  const scanApi = useRef(null)
+  const firstGrowth = useRef(true)
   const [fail, setFail] = useState(false) // connection/login problem -> show Retry
   const [vis, setVis] = useState(60) // how many ticks the chart shows (zoom)
   const onZoom = useCallback(dir => setVis(v => Math.min(280, Math.max(12, Math.round(v * (dir > 0 ? 1.25 : 0.8))))), [])
@@ -478,18 +480,20 @@ export default function App() {
     const syms = Object.values(MARKETS), D = {}
     syms.forEach(sy => { D[sy] = { px: [], pct: null, t: 0, sub: false, err: '', warned: 0, count: 3000 } })
     const w = new WebSocket(PUB)
-    let dead = false, cur = null, timer = null
+    let dead = false, cur = null, timer = null, hold = 0
     const q = [], queued = new Set()
     const send1 = o => w.readyState === 1 && w.send(JSON.stringify(o))
     const enqueue = (type, sy) => { const k = type + sy; if (queued.has(k)) return; queued.add(k); q.push({ type, sy }) }
     const finish = (type, sy, err) => {
       if (!cur || cur.type !== type || cur.sy !== sy) return
       clearTimeout(timer); queued.delete(type + sy); cur = null
-      if (err) { D[sy].err = err; if (Date.now() - D[sy].warned > 30000) { D[sy].warned = Date.now(); addLog(`⚠️ Scanner ${sy}: ${err}`) } }
-      setTimeout(pump, 350) // small gap between requests
+      const rl = !!err && /rate limit/i.test(err)
+      if (err) { D[sy].err = err; if (!rl && Date.now() - D[sy].warned > 30000) { D[sy].warned = Date.now(); addLog(`⚠️ Scanner ${sy}: ${err}`) } }
+      if (rl) hold = Date.now() + 15000 // rate limited: pause the queue, the 8s retry loop re-queues the market
+      setTimeout(pump, rl ? 15000 : type === 'h' ? 1500 : 350) // history is the heavy request -> longer gap
     }
     const pump = () => {
-      if (dead || cur || w.readyState !== 1) return
+      if (dead || cur || w.readyState !== 1 || Date.now() < hold) return
       const t = q.shift(); if (!t) return
       cur = t
       send1(t.type === 'h'
@@ -520,7 +524,8 @@ export default function App() {
         if (d && m.tick.epoch > d.t) { d.t = m.tick.epoch; d.px.push(+m.tick.quote); if (d.px.length > 5000) d.px.shift() }
       } else if (m.msg_type === 'proposal') {
         const sy = er.underlying_symbol, d = D[sy], cd = m.proposal?.contract_details
-        if (d && cd?.high_barrier) { d.pct = (+cd.high_barrier - +cd.low_barrier) / (+cd.high_barrier + +cd.low_barrier); d.err = ''; finish('p', sy) }
+        if (d && cd?.high_barrier && +er.growth_rate !== +C.current.growth) finish('p', sy) // answer for an old growth rate: ignore, it gets re-requested
+        else if (d && cd?.high_barrier) { d.pct = (+cd.high_barrier - +cd.low_barrier) / (+cd.high_barrier + +cd.low_barrier); d.err = ''; finish('p', sy) }
       }
     }
     const iv = setInterval(() => {
@@ -533,8 +538,14 @@ export default function App() {
     }, 1000)
     const retry = setInterval(() => { fill(); pump() }, 8000) // markets that failed get requested again
     const ping = setInterval(() => send1({ ping: 1 }), 30000)
-    return () => { dead = true; clearTimeout(timer); clearInterval(iv); clearInterval(retry); clearInterval(ping); w.onopen = w.onmessage = w.onclose = null; w.close() }
-  }, [cfg.scanOn, cfg.growth])
+    // growth rate changed -> only the barrier % must be re-read; the tick history stays (no extra ticks_history requests)
+    scanApi.current = { regrow: () => { syms.forEach(sy => { D[sy].pct = null; enqueue('p', sy) }); pump() } }
+    return () => { scanApi.current = null; dead = true; clearTimeout(timer); clearInterval(iv); clearInterval(retry); clearInterval(ping); w.onopen = w.onmessage = w.onclose = null; w.close() }
+  }, [cfg.scanOn])
+  useEffect(() => {
+    if (firstGrowth.current) { firstGrowth.current = false; return }
+    scanApi.current?.regrow()
+  }, [cfg.growth])
 
   const minS = +cfg.minStreak || 0
   const rows = Object.entries(MARKETS).map(([name, sy]) => {
@@ -546,8 +557,9 @@ export default function App() {
   R.current.marketOk = !(cfg.scanOn && cfg.autoSwitch) || !!curRow?.ok // auto mode: only trade markets that pass the filter
   useEffect(() => { // auto-switch to the best market (not while a trade is running, max once per 30s)
     if (!cfg.scanOn || !cfg.autoSwitch || !best || best.sy === cfg.symbol) return
+    if (rows.filter(x => x.score != null).length < 4) return // wait until most markets are scanned (partial data = wrong "best")
     const r = R.current
-    if (r.open || r.busy || Date.now() - (r.lastSwitch || 0) < 30000) return
+    if (r.open || r.busy || Date.now() - (r.lastSwitch || 0) < 90000) return
     if (curRow?.ok && best.score < curRow.score * 1.2) return // only switch if clearly better
     r.lastSwitch = Date.now()
     setCfg(c => ({ ...c, symbol: best.sy }))
