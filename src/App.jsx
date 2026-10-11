@@ -37,6 +37,20 @@ const streakStats = (px, pct) => {
   const med = k ? (k % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2) : 0
   return { cur, last: out.length ? out[out.length - 1] : 0, avg, med, k }
 }
+// Market quality from recent ticks. volX = recent tick volatility / long-run volatility (1.0 = normal, >1.3 = burst).
+// er = efficiency ratio over the window (0 = pure chop, 1 = straight trend). Both too high -> skip entries.
+const qualityOf = (px, pct, N, volMax, erMax) => {
+  if (!pct || px.length < Math.max(N + 2, 60)) return null
+  const d = []; for (let i = 1; i < px.length; i++) d.push(px[i] - px[i - 1])
+  const rec = d.slice(-N), lng = d.slice(-300)
+  const rms = a => Math.sqrt(a.reduce((t, x) => t + x * x, 0) / a.length)
+  const volX = rms(rec) / (rms(lng) || 1)
+  const path = rec.reduce((t, x) => t + Math.abs(x), 0)
+  const er = path ? Math.abs(px[px.length - 1] - px[px.length - 1 - N]) / path : 0
+  const ok = volX <= volMax && er <= erMax
+  const why = volX > volMax ? `volatility ${volX.toFixed(2)}× > ${volMax}×` : er > erMax ? `trending ${er.toFixed(2)} > ${erMax}` : ''
+  return { volX, er, ok, why }
+}
 const lim = v => (+v > 0 ? +v : Infinity) // blank / 0 = no limit
 const api = async body => {
   const r = await fetch('/api/deriv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -156,7 +170,7 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
 }
 
 export default function App() {
-  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, scanOn: false, autoSwitch: false, minStreak: 10, scoreBy: 'avg', rotate: false })
+  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, qOn: false, qN: 20, qVol: 1.3, qTrend: 0.5, scanOn: false, autoSwitch: false, minStreak: 10, scoreBy: 'avg', rotate: false })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
   const [bar, setBar] = useState(null)
@@ -169,6 +183,7 @@ export default function App() {
   const [hit, setHit] = useState(false)
   const [menu, setMenu] = useState(false)   // account dropdown
   const [scan, setScan] = useState({}) // market scanner results
+  const [quality, setQuality] = useState(null) // current market quality (volatility / trend)
   const scanApi = useRef(null)
   const firstGrowth = useRef(true)
   const [fail, setFail] = useState(false) // connection/login problem -> show Retry
@@ -238,6 +253,11 @@ export default function App() {
     subProposal() // fresh proposal stream
     addLog('🔄 Bot reset — press Start bot')
   }
+  const calcQuality = () => {
+    const r = R.current, c = C.current
+    const q = qualityOf(r.px || [], r.pct, +c.qN || 20, +c.qVol || 1.3, +c.qTrend || 0.5)
+    r.quality = q; setQuality(q)
+  }
   const flashRed = () => { const r = R.current; setHit(true); clearTimeout(r.ft); r.ft = setTimeout(() => setHit(false), 1000) }
   const addMark = (t, kind) => setMarks(ms => [...ms, { t, kind }].slice(-40))
   const subProposal = () => {
@@ -257,7 +277,7 @@ export default function App() {
     const gk = c.symbol + '|' + c.growth
     if (r.gk !== gk) { r.gk = gk; r.pct = null; r.lastQ = null; setBar(null) } // different market / growth rate -> different barrier
     if (r.tickSym !== c.symbol) { // market changed (or first connect on this socket)
-      if (r.lastSym !== c.symbol) { r.since = 999; r.lastStay = null; r.hist = []; r.px = []; setTicks([]); setMarks([]); setStreaks([]) } // same market on a new socket: keep the chart
+      if (r.lastSym !== c.symbol) { r.since = 999; r.lastStay = null; r.hist = []; r.px = []; r.quality = null; setQuality(null); setTicks([]); setMarks([]); setStreaks([]) } // same market on a new socket: keep the chart
       if (r.ftick) { /* a forget-all is already in flight; its reply requests the latest symbol */ }
       else if (r.tickSub) { send({ forget: r.tickSub }); r.tickSub = null; reqTicks() } // different symbol: no need to wait
       else if (r.tickSym) { r.ftick = 'all'; send({ forget_all: 'ticks' }) } // old stream's id unknown
@@ -279,7 +299,7 @@ export default function App() {
     if (epoch && r.lastT && epoch <= r.lastT) return // already have this tick (history overlap)
     setTicks(t => [...t.slice(-299), { q, t: epoch || Date.now() / 1000 }])
     r.lastT = epoch || Date.now() / 1000
-    r.px = [...(r.px || []).slice(-299), q]; recalcStreaks()
+    r.px = [...(r.px || []).slice(-299), q]; recalcStreaks(); calcQuality()
     const prevQ = r.lastQ; r.lastQ = q
     // barrier = previous spot +/- pct, so a hit is |move| >= pct * previous price (works even before the new proposal arrives)
     if (prevQ != null && r.pct && Math.abs(q - prevQ) >= r.pct * prevQ - 1e-9) { r.lastBreakAt = Date.now(); flashRed() }
@@ -297,7 +317,12 @@ export default function App() {
   }
   const maybeEnter = () => {
     const r = R.current, c = C.current
-    if (RUN.current && r.trading && !r.open && !r.busy && r.pnl > -lim(c.maxLoss) && r.pnl < lim(c.maxProfit) && r.marketOk !== false && r.since === +c.wait) buy()
+    if (!(RUN.current && r.trading && !r.open && !r.busy && r.pnl > -lim(c.maxLoss) && r.pnl < lim(c.maxProfit) && r.marketOk !== false && r.since === +c.wait)) return
+    if (c.qOn && !r.quality?.ok) { // market too volatile / trending right now -> skip this entry
+      if (Date.now() - (r.qLog || 0) > 20000) { r.qLog = Date.now(); addLog(`⏭ Entry skipped — ${r.quality?.why || 'checking market…'}`) }
+      return
+    }
+    buy()
   }
   const onPoc = p => {
     const r = R.current, c = C.current
@@ -348,7 +373,7 @@ export default function App() {
         r.lastTickAt = Date.now()
         const arr = h.prices.map((q, i) => ({ q: +q, t: +h.times[i] }))
         r.lastT = arr[arr.length - 1].t; r.lastQ = arr[arr.length - 1].q
-        r.px = arr.map(a => a.q).slice(-300); recalcStreaks()
+        r.px = arr.map(a => a.q).slice(-300); recalcStreaks(); calcQuality()
         setTicks(arr.slice(-300))
         break
       }
@@ -360,7 +385,7 @@ export default function App() {
         r.ask = +m.proposal.ask_price || null; r.propStake = m.echo_req?.amount != null ? +m.echo_req.amount : null
         if (r.redo) { r.redo = false; subProposal(); break } // settings changed while request was in flight
         if (d.high_barrier) { r.bar = { high: +d.high_barrier, low: +d.low_barrier }; setBar(r.bar); r.pct = (r.bar.high - r.bar.low) / (r.bar.high + r.bar.low) }
-        if (r.pct) { r.hasStay = true; recalcStreaks(); maybeEnter() } // streak counted from prices; buy right away on a fresh proposal
+        if (r.pct) { r.hasStay = true; recalcStreaks(); calcQuality(); maybeEnter() } // streak counted from prices; buy right away on a fresh proposal
         break
       }
       case 'buy': addMark(m.buy.start_time || r.lastT, 'buy'); r.open = m.buy.contract_id; r.busy = false; r.inTicks = 0; r.selling = false; subProposal(); addLog(`🟢 Bought #${m.buy.contract_id}`)
@@ -543,7 +568,7 @@ export default function App() {
       const out = {}
       syms.forEach(sy => {
         const d = D[sy], st = d.pct && d.px.length > 30 ? streakStats(d.px, d.pct) : null
-        out[sy] = st && st.k >= 10 ? st : { pending: true, err: d.err } // need at least 10 completed streaks
+        out[sy] = st && st.k >= 10 ? { ...st, q: qualityOf(d.px, d.pct, +C.current.qN || 20, +C.current.qVol || 1.3, +C.current.qTrend || 0.5) } : { pending: true, err: d.err } // need at least 10 completed streaks
       })
       setScan(out)
     }, 1000)
@@ -561,7 +586,7 @@ export default function App() {
   const minS = +cfg.minStreak || 0
   const rows = Object.entries(MARKETS).map(([name, sy]) => {
     const d = scan[sy], score = d && !d.pending ? (cfg.scoreBy === 'med' ? d.med : d.avg) : null
-    return { name, sy, ...d, score, ok: score != null && score >= minS }
+    return { name, sy, ...d, score, ok: score != null && score >= minS && (!cfg.qOn || d.q?.ok !== false) }
   })
   const best = rows.filter(r => r.ok).sort((a, b) => b.score - a.score)[0]
   const curRow = rows.find(r => r.sy === cfg.symbol)
@@ -631,6 +656,12 @@ export default function App() {
           <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} vis={vis} onZoom={onZoom} onReset={onReset} />
           <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
             <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b> <button className="mini" onClick={resetBot} title="Reset P/L and bot state">↺ Reset</button></span></div>
+          {quality && (
+            <div className={'qbadge ' + (quality.ok ? 'g' : 'r')}>
+              {quality.ok ? '✅' : '⛔'} Market quality: volatility {quality.volX.toFixed(2)}× · trend {quality.er.toFixed(2)}
+              {!cfg.qOn ? ' (filter off)' : quality.ok ? '' : ` — skipping entries (${quality.why})`}
+            </div>
+          )}
           {streaks.length > 0 && (
             <div className="chips"><span className="lbl">Streaks</span>
               {streaks.map((v, i) => <span key={i} className={'chip' + (i === 0 ? ' cur' : '')}>{v}</span>)}
@@ -645,13 +676,13 @@ export default function App() {
             </div>
             {cfg.scanOn && (
               <table className="scantbl">
-                <thead><tr><th>Market</th><th>Now</th><th>Last</th><th>Avg (30)</th><th>Median (30)</th><th></th></tr></thead>
+                <thead><tr><th>Market</th><th>Now</th><th>Last</th><th>Avg (30)</th><th>Median (30)</th><th>Vol× · Trend</th><th></th></tr></thead>
                 <tbody>
                   {rows.map(r => (
                     <tr key={r.sy} className={r.sy === cfg.symbol ? 'cur' : ''} onClick={() => setCfg(c => ({ ...c, symbol: r.sy }))}>
                       <td>{r.sy === cfg.symbol ? '● ' : ''}{r.name.replace(' Index', '')}</td>
-                      <td>{r.cur ?? '…'}</td><td>{r.last ?? '…'}</td><td>{r.avg != null ? r.avg.toFixed(1) : '…'}</td><td>{r.med != null ? r.med.toFixed(1) : '…'}</td>
-                      <td className={best?.sy === r.sy ? 'g' : r.score != null && !r.ok ? 'r' : ''}>{best?.sy === r.sy ? 'BEST ★' : r.score == null ? (r.err ? 'retrying…' : '') : r.ok ? 'ok' : 'skip'}</td>
+                      <td>{r.cur ?? '…'}</td><td>{r.last ?? '…'}</td><td>{r.avg != null ? r.avg.toFixed(1) : '…'}</td><td>{r.med != null ? r.med.toFixed(1) : '…'}</td><td className={r.q && !r.q.ok ? 'r' : ''}>{r.q ? `${r.q.volX.toFixed(2)}× · ${r.q.er.toFixed(2)}` : '…'}</td>
+                      <td className={best?.sy === r.sy ? 'g' : r.score != null && !r.ok ? 'r' : ''}>{best?.sy === r.sy ? 'BEST ★' : r.score == null ? (r.err ? 'retrying…' : '') : r.ok ? 'ok' : (cfg.qOn && r.q && !r.q.ok && r.score >= minS) ? (r.q.volX > (+cfg.qVol || 1.3) ? 'volatile' : 'trending') : 'skip'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -673,6 +704,17 @@ export default function App() {
             <div><label>Stop at profit (USD)</label><input type="number" min="0" value={cfg.maxProfit} onChange={set('maxProfit')} /></div>
             <div className="full"><label>Strategy: enter after barrier hit + wait N ticks (0 = immediately)</label>
               <select value={cfg.wait} onChange={set('wait')}>{[0, 1, 2, 3, 5, 8].map(t => <option key={t}>{t}</option>)}</select></div>
+            <div className="full rot">
+              <label className="rotl"><input type="checkbox" checked={cfg.qOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, qOn: v })) }} /> 🛡 Skip trades when the market is volatile / trending</label>
+              {cfg.qOn && (
+                <div className="qparams">
+                  <span>Window <input type="number" min="5" className="mini-in" value={cfg.qN} onChange={set('qN')} /> ticks</span>
+                  <span>Max volatility <input type="number" step="0.1" min="1" className="mini-in" value={cfg.qVol} onChange={set('qVol')} />×</span>
+                  <span>Max trend <input type="number" step="0.05" min="0" max="1" className="mini-in" value={cfg.qTrend} onChange={set('qTrend')} /></span>
+                </div>
+              )}
+              <small>Volatility 1.0× = normal. Trend 0 = choppy, 1 = straight line.</small>
+            </div>
             <div className="full rot">
               <label className="rotl"><input type="checkbox" checked={cfg.rotate} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, rotate: v, autoSwitch: v ? false : c.autoSwitch })) }} /> 🔁 Rotate markets: after each trade, next trade on the next market</label>
               <small>V10 → V25 → V50 → V75 → V100 → V10 …{cfg.scanOn ? ' (scanner on: markets that fail the filter are skipped)' : ''}</small>
