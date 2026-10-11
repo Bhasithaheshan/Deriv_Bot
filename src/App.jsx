@@ -170,7 +170,7 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
 }
 
 export default function App() {
-  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, qOn: false, qN: 20, qVol: 1.3, qTrend: 0.5, scanOn: false, autoSwitch: false, minStreak: 10, scoreBy: 'avg', rotate: false })
+  const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, qOn: false, qExit: true, qN: 20, qVol: 1.3, qTrend: 0.5, scanOn: false, autoSwitch: false, rotate: false })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
   const [bar, setBar] = useState(null)
@@ -244,6 +244,13 @@ export default function App() {
     setCfg(c => ({ ...c, symbol: next }))
     addLog(`🔁 Next trade on ${Object.keys(MARKETS).find(k => MARKETS[k] === next)}`)
   }
+  const switchToBest = why => { // go to the calmest market right now (used after a quality exit)
+    const r = R.current, b = r.bestRow
+    if (!b || b.sy === C.current.symbol) { addLog('⏳ No calmer market right now — waiting for quality to return'); return }
+    r.lastSwitch = Date.now()
+    setCfg(c => ({ ...c, symbol: b.sy }))
+    addLog(`🔁 ${why} → switched to ${b.name}`)
+  }
   const resetBot = () => { // clear P/L + stuck flags so the bot can be started again (no page refresh needed)
     const r = R.current
     if (r.open) { addLog('⚠️ A trade is still open — wait until it closes, then press Reset'); return }
@@ -290,7 +297,7 @@ export default function App() {
     const r = R.current
     if (!r.pid || r.open || !r.trading || Date.now() - (r.propAt || 0) > 4000) { r.busy = false; return }
     if (r.propStake != null && r.propStake !== +C.current.stake) { r.busy = false; return } // stake changed, wait for new proposal
-    r.busy = true; r.selling = false
+    r.busy = true; r.selling = false; r.qSold = false
     send({ buy: r.pid, price: r.ask || +C.current.stake })
     r.pid = null // a bought proposal id is single-use
   }
@@ -305,7 +312,11 @@ export default function App() {
     if (prevQ != null && r.pct && Math.abs(q - prevQ) >= r.pct * prevQ - 1e-9) { r.lastBreakAt = Date.now(); flashRed() }
     if (r.open) { // contract running: count ticks ourselves, sell after entry tick + target ticks
       r.inTicks = (r.inTicks || 0) + 1
-      if (r.inTicks >= +c.target + 1 && !r.selling) { r.selling = true; send({ sell: r.open, price: 0 }) }
+      const bad = c.qOn && c.qExit && r.quality && !r.quality.ok // quality dropped while we are in the trade
+      if (!r.selling && (r.inTicks >= +c.target + 1 || (bad && r.inTicks >= 2))) {
+        if (bad && r.inTicks < +c.target + 1) { if (!r.qSold) addLog(`⚠️ Market quality dropped (${r.quality.why}) — selling now`); r.qSold = true }
+        r.selling = true; send({ sell: r.open, price: 0 })
+      }
       return
     }
     const now = Date.now()
@@ -334,7 +345,8 @@ export default function App() {
       addLog(`${p.profit >= 0 ? '✅ WIN' : '🔴 LOSS'}  ${(+p.profit).toFixed(2)}`)
       if (r.pnl >= lim(c.maxProfit)) { setRun(false); addLog(`🎯 Profit target reached (+${r.pnl.toFixed(2)}) — bot stopped`) }
       else if (r.pnl <= -lim(c.maxLoss)) { setRun(false); addLog(`⛔ Loss limit reached (${r.pnl.toFixed(2)}) — bot stopped`) }
-      if (c.rotate) rotateMarket()
+      if (r.qSold) { r.qSold = false; if (c.autoSwitch) switchToBest('Quality dropped') } // sold because of quality -> move to a calm market
+      else if (c.rotate) rotateMarket()
       return
     }
   }
@@ -583,24 +595,30 @@ export default function App() {
     scanApi.current?.regrow()
   }, [cfg.growth])
 
-  const minS = +cfg.minStreak || 0
+  // Ranking is by MARKET QUALITY (volatility burst + trend), not by streak avg/median (those columns are info only).
+  const volMax = +cfg.qVol || 1.3, erMax = +cfg.qTrend || 0.5
   const rows = Object.entries(MARKETS).map(([name, sy]) => {
-    const d = scan[sy], score = d && !d.pending ? (cfg.scoreBy === 'med' ? d.med : d.avg) : null
-    return { name, sy, ...d, score, ok: score != null && score >= minS && (!cfg.qOn || d.q?.ok !== false) }
+    const d = scan[sy], q = d && !d.pending ? d.q : null
+    const qs = q ? (q.volX / volMax + q.er / erMax) / 2 : null // lower = calmer (average of both limits' usage)
+    return { name, sy, ...d, q, qs, ok: !!q?.ok }
   })
-  const best = rows.filter(r => r.ok).sort((a, b) => b.score - a.score)[0]
+  const best = rows.filter(r => r.ok).sort((a, b) => a.qs - b.qs)[0]
   const curRow = rows.find(r => r.sy === cfg.symbol)
-  R.current.okSyms = cfg.scanOn && rows.filter(x => x.score != null).length >= 4 ? rows.filter(x => x.ok).map(x => x.sy) : null
-  R.current.marketOk = !(cfg.scanOn && cfg.autoSwitch) || !!curRow?.ok // auto mode: only trade markets that pass the filter
-  useEffect(() => { // auto-switch to the best market (not while a trade is running, max once per 30s)
+  R.current.bestRow = best || null
+  R.current.okSyms = cfg.scanOn && rows.filter(x => x.q).length >= 4 ? rows.filter(x => x.ok).map(x => x.sy) : null
+  R.current.marketOk = !(cfg.scanOn && cfg.autoSwitch) || (quality ? quality.ok : !!curRow?.ok) // auto mode: only trade calm markets
+  useEffect(() => { // auto-switch to the calmest market (not while a trade runs, max once per 60s)
     if (!cfg.scanOn || !cfg.autoSwitch || cfg.rotate || !best || best.sy === cfg.symbol) return
-    if (rows.filter(x => x.score != null).length < 4) return // wait until most markets are scanned (partial data = wrong "best")
+    if (rows.filter(x => x.q).length < 3) return // wait until most markets are scanned
     const r = R.current
-    if (r.open || r.busy || Date.now() - (r.lastSwitch || 0) < 90000) return
-    if (curRow?.ok && best.score < curRow.score * 1.2) return // only switch if clearly better
+    if (r.open || r.busy || Date.now() - (r.lastSwitch || 0) < 60000) return
+    const curQ = r.quality || curRow?.q
+    const curOk = curQ ? curQ.ok : true
+    const curQs = curQ ? (curQ.volX / volMax + curQ.er / erMax) / 2 : 1
+    if (curOk && best.qs > curQs * 0.7) return // current market is fine: only move if another is clearly calmer
     r.lastSwitch = Date.now()
     setCfg(c => ({ ...c, symbol: best.sy }))
-    addLog(`🔁 Switched to ${best.name} (${cfg.scoreBy === 'med' ? 'median' : 'avg'} of last 30 streaks: ${best.score.toFixed(0)})`)
+    addLog(`🔁 Switched to ${best.name} (calmest: volatility ${best.q.volX.toFixed(2)}× · trend ${best.q.er.toFixed(2)})`)
   }, [scan])
 
   const set = k => e => { const v = e.target.value; setCfg(c => ({ ...c, [k]: v })) }
@@ -670,9 +688,7 @@ export default function App() {
           <div className="scan">
             <div className="scanhead">
               <label className="chk"><input type="checkbox" checked={cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, scanOn: v })) }} /> Market scanner</label>
-              <label className="chk"><input type="checkbox" checked={cfg.autoSwitch} disabled={!cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, autoSwitch: v, rotate: v ? false : c.rotate })) }} /> Auto-switch to best</label>
-              <span className="chk">Score by <select className="mini-sel" value={cfg.scoreBy} onChange={set('scoreBy')}><option value="avg">Average</option><option value="med">Median</option></select> of last 30 streaks</span>
-              <span className="chk">Skip if score &lt; <input type="number" min="0" className="mini-in" value={cfg.minStreak} onChange={set('minStreak')} /></span>
+              <label className="chk"><input type="checkbox" checked={cfg.autoSwitch} disabled={!cfg.scanOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, autoSwitch: v, rotate: v ? false : c.rotate })) }} /> Auto-switch to best quality</label>
             </div>
             {cfg.scanOn && (
               <table className="scantbl">
@@ -682,7 +698,7 @@ export default function App() {
                     <tr key={r.sy} className={r.sy === cfg.symbol ? 'cur' : ''} onClick={() => setCfg(c => ({ ...c, symbol: r.sy }))}>
                       <td>{r.sy === cfg.symbol ? '● ' : ''}{r.name.replace(' Index', '')}</td>
                       <td>{r.cur ?? '…'}</td><td>{r.last ?? '…'}</td><td>{r.avg != null ? r.avg.toFixed(1) : '…'}</td><td>{r.med != null ? r.med.toFixed(1) : '…'}</td><td className={r.q && !r.q.ok ? 'r' : ''}>{r.q ? `${r.q.volX.toFixed(2)}× · ${r.q.er.toFixed(2)}` : '…'}</td>
-                      <td className={best?.sy === r.sy ? 'g' : r.score != null && !r.ok ? 'r' : ''}>{best?.sy === r.sy ? 'BEST ★' : r.score == null ? (r.err ? 'retrying…' : '') : r.ok ? 'ok' : (cfg.qOn && r.q && !r.q.ok && r.score >= minS) ? (r.q.volX > (+cfg.qVol || 1.3) ? 'volatile' : 'trending') : 'skip'}</td>
+                      <td className={best?.sy === r.sy ? 'g' : r.q && !r.ok ? 'r' : ''}>{best?.sy === r.sy ? 'BEST ★' : !r.q ? (r.err ? 'retrying…' : '') : r.ok ? 'ok' : r.q.volX > volMax ? 'volatile' : 'trending'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -706,14 +722,15 @@ export default function App() {
               <select value={cfg.wait} onChange={set('wait')}>{[0, 1, 2, 3, 5, 8].map(t => <option key={t}>{t}</option>)}</select></div>
             <div className="full rot">
               <label className="rotl"><input type="checkbox" checked={cfg.qOn} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, qOn: v })) }} /> 🛡 Skip trades when the market is volatile / trending</label>
+              <div className="qparams">
+                <span>Window <input type="number" min="5" className="mini-in" value={cfg.qN} onChange={set('qN')} /> ticks</span>
+                <span>Max volatility <input type="number" step="0.1" min="1" className="mini-in" value={cfg.qVol} onChange={set('qVol')} />×</span>
+                <span>Max trend <input type="number" step="0.05" min="0" max="1" className="mini-in" value={cfg.qTrend} onChange={set('qTrend')} /></span>
+              </div>
               {cfg.qOn && (
-                <div className="qparams">
-                  <span>Window <input type="number" min="5" className="mini-in" value={cfg.qN} onChange={set('qN')} /> ticks</span>
-                  <span>Max volatility <input type="number" step="0.1" min="1" className="mini-in" value={cfg.qVol} onChange={set('qVol')} />×</span>
-                  <span>Max trend <input type="number" step="0.05" min="0" max="1" className="mini-in" value={cfg.qTrend} onChange={set('qTrend')} /></span>
-                </div>
+                <label className="rotl" style={{ marginTop: 6 }}><input type="checkbox" checked={cfg.qExit} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, qExit: v })) }} /> ⚡ Sell an open trade if quality drops (then switch to a calm market if Auto-switch is on)</label>
               )}
-              <small>Volatility 1.0× = normal. Trend 0 = choppy, 1 = straight line.</small>
+              <small>Volatility 1.0× = normal (use 1.3 or more, 1.0 skips almost everything). Trend 0 = choppy, 1 = straight line. These limits also drive Auto-switch / Rotate.</small>
             </div>
             <div className="full rot">
               <label className="rotl"><input type="checkbox" checked={cfg.rotate} onChange={e => { const v = e.target.checked; setCfg(c => ({ ...c, rotate: v, autoSwitch: v ? false : c.autoSwitch })) }} /> 🔁 Rotate markets: after each trade, next trade on the next market</label>
