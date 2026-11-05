@@ -193,7 +193,7 @@ export default function App() {
   const [acct, setAcct] = useState(null)
   const [balance, setBalance] = useState(null)
   const [log, setLog] = useState([])
-  const [stats, setStats] = useState({ n: 0, pnl: 0 })
+  const [stats, setStats] = useState({ n: 0, pnl: 0, w: 0, l: 0 })
   const [streaks, setStreaks] = useState([])
   const [hit, setHit] = useState(false)
   const [menu, setMenu] = useState(false)   // account dropdown
@@ -208,7 +208,7 @@ export default function App() {
   const onReset = useCallback(() => setVis(60), [])
   const [marks, setMarks] = useState([])
   const ws = useRef(null)
-  const R = useRef({ pnl: 0, n: 0, since: 999 })
+  const R = useRef({ pnl: 0, n: 0, w: 0, l: 0, since: 999 })
   const C = useRef(cfg); C.current = cfg
   const RUN = useRef(run); RUN.current = run
   MARKETS = cfg.rr ? M_1S : M_N
@@ -296,7 +296,7 @@ export default function App() {
     const r = R.current, c = C.current, rec = r.rec
     clearTimeout(r.recTimer)
     const profit = +p.profit
-    r.pnl += profit; r.n++; setStats({ n: r.n, pnl: r.pnl })
+    r.pnl += profit; r.n++; if (profit > 0) r.w++; else r.l++; setStats({ n: r.n, pnl: r.pnl, w: r.w, l: r.l })
     addLog(`${profit >= 0 ? '✅ Over 2 WIN' : '🔴 Over 2 LOSS'}  ${profit.toFixed(2)}`)
     if (profit > 0) rec.debt -= profit; else rec.debt += rec.stake
     if (profit > 0 && rec.debt <= 0.005) { // recovered -> normal accumulator trading again
@@ -314,8 +314,8 @@ export default function App() {
     const r = R.current
     if (r.open) { addLog('⚠️ A trade is still open — wait until it closes, then press Reset'); return }
     setRun(false); clearTimeout(r.recTimer); r.rec = null; r.recovering = false; setRecUi(null)
-    r.pnl = 0; r.n = 0; r.busy = false; r.selling = false; r.inTicks = 0
-    setStats({ n: 0, pnl: 0 }); setMarks([])
+    r.pnl = 0; r.n = 0; r.w = 0; r.l = 0; r.busy = false; r.selling = false; r.inTicks = 0
+    setStats({ n: 0, pnl: 0, w: 0, l: 0 }); setMarks([])
     subProposal() // fresh proposal stream
     addLog('🔄 Bot reset — press Start bot')
   }
@@ -400,8 +400,8 @@ export default function App() {
     if (r.rec && r.rec.cid && p.contract_id === r.rec.cid) { if (p.is_sold) onOverResult(p); return } // Over 2 recovery trade
     if (p.is_sold) {
       if (r.open !== p.contract_id) return
-      r.open = null; r.busy = false; r.pnl += +p.profit; r.n++
-      setStats({ n: r.n, pnl: r.pnl })
+      r.open = null; r.busy = false; r.pnl += +p.profit; r.n++; if (+p.profit > 0) r.w++; else r.l++
+      setStats({ n: r.n, pnl: r.pnl, w: r.w, l: r.l })
       addMark(p.sell_time || r.lastT, p.profit >= 0 ? 'win' : 'loss')
       addLog(`${p.profit >= 0 ? '✅ WIN' : '🔴 LOSS'}  ${(+p.profit).toFixed(2)}`)
       const hitT = r.pnl >= lim(c.maxProfit), hitL = r.pnl <= -lim(c.maxLoss)
@@ -756,7 +756,7 @@ export default function App() {
           <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.q.toFixed(2)}</span></div>
           <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} vis={vis} onZoom={onZoom} onReset={onReset} />
           <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
-            <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b> <button className="mini" onClick={resetBot} title="Reset P/L and bot state">↺ Reset</button></span></div>
+            <span>Trades {stats.n} | <b className="g">Win {stats.w}</b> | <b className="r">Loss {stats.l}</b>{stats.n > 0 && <span className="muted"> ({Math.round((stats.w / stats.n) * 100)}%)</span>} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b> <button className="mini" onClick={resetBot} title="Reset P/L and bot state">↺ Reset</button></span></div>
           {recUi && <div className="qbadge r">🛠 Recovery step {recUi.step}/{cfg.rrSteps} · debt {recUi.debt.toFixed(2)} · Over 2 on {recUi.name} · stake {recUi.stake.toFixed(2)}</div>}
           {quality && (
             <div className={'qbadge ' + (quality.ok ? 'g' : 'r')}>
@@ -830,7 +830,7 @@ export default function App() {
               if (!run && live && !confirm('REAL account! Start auto trading?')) return
               if (!run) { // every Start = fresh P/L and clean flags
                 const r = R.current
-                r.pnl = 0; r.n = 0; setStats({ n: 0, pnl: 0 })
+                r.pnl = 0; r.n = 0; r.w = 0; r.l = 0; setStats({ n: 0, pnl: 0, w: 0, l: 0 })
                 if (!r.open) { r.busy = false; r.selling = false }
                 addLog(`▶ Bot started — waiting for a barrier hit${+cfg.wait ? ` + ${cfg.wait} ticks` : ''} (now ${r.since > 900 ? '-' : r.since} ticks since last hit)`)
               }

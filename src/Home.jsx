@@ -178,7 +178,7 @@ export default function App() {
   const [acct, setAcct] = useState(null)
   const [balance, setBalance] = useState(null)
   const [log, setLog] = useState([])
-  const [stats, setStats] = useState({ n: 0, pnl: 0 })
+  const [stats, setStats] = useState({ n: 0, pnl: 0, w: 0, l: 0 })
   const [streaks, setStreaks] = useState([])
   const [hit, setHit] = useState(false)
   const [menu, setMenu] = useState(false)   // account dropdown
@@ -192,7 +192,7 @@ export default function App() {
   const onReset = useCallback(() => setVis(60), [])
   const [marks, setMarks] = useState([])
   const ws = useRef(null)
-  const R = useRef({ pnl: 0, n: 0, since: 999 })
+  const R = useRef({ pnl: 0, n: 0, w: 0, l: 0, since: 999 })
   const C = useRef(cfg); C.current = cfg
   const RUN = useRef(run); RUN.current = run
   const send = o => ws.current?.readyState === 1 && ws.current.send(JSON.stringify(o))
@@ -255,8 +255,8 @@ export default function App() {
     const r = R.current
     if (r.open) { addLog('⚠️ A trade is still open — wait until it closes, then press Reset'); return }
     setRun(false)
-    r.pnl = 0; r.n = 0; r.busy = false; r.selling = false; r.inTicks = 0
-    setStats({ n: 0, pnl: 0 }); setMarks([])
+    r.pnl = 0; r.n = 0; r.w = 0; r.l = 0; r.busy = false; r.selling = false; r.inTicks = 0
+    setStats({ n: 0, pnl: 0, w: 0, l: 0 }); setMarks([])
     subProposal() // fresh proposal stream
     addLog('🔄 Bot reset — press Start bot')
   }
@@ -339,8 +339,8 @@ export default function App() {
     const r = R.current, c = C.current
     if (p.is_sold) {
       if (r.open !== p.contract_id) return
-      r.open = null; r.busy = false; r.pnl += +p.profit; r.n++
-      setStats({ n: r.n, pnl: r.pnl })
+      r.open = null; r.busy = false; r.pnl += +p.profit; r.n++; if (+p.profit > 0) r.w++; else r.l++
+      setStats({ n: r.n, pnl: r.pnl, w: r.w, l: r.l })
       addMark(p.sell_time || r.lastT, p.profit >= 0 ? 'win' : 'loss')
       addLog(`${p.profit >= 0 ? '✅ WIN' : '🔴 LOSS'}  ${(+p.profit).toFixed(2)}`)
       if (r.pnl >= lim(c.maxProfit)) { setRun(false); addLog(`🎯 Profit target reached (+${r.pnl.toFixed(2)}) — bot stopped`) }
@@ -674,7 +674,7 @@ export default function App() {
           <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.q.toFixed(2)}</span></div>
           <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} vis={vis} onZoom={onZoom} onReset={onReset} />
           <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
-            <span>Trades {stats.n} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b> <button className="mini" onClick={resetBot} title="Reset P/L and bot state">↺ Reset</button></span></div>
+            <span>Trades {stats.n} | <b className="g">Win {stats.w}</b> | <b className="r">Loss {stats.l}</b>{stats.n > 0 && <span className="muted"> ({Math.round((stats.w / stats.n) * 100)}%)</span>} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b> <button className="mini" onClick={resetBot} title="Reset P/L and bot state">↺ Reset</button></span></div>
           {quality && (
             <div className={'qbadge ' + (quality.ok ? 'g' : 'r')}>
               {quality.ok ? '✅' : '⛔'} Market quality: volatility {quality.volX.toFixed(2)}× · trend {quality.er.toFixed(2)}
@@ -743,7 +743,7 @@ export default function App() {
               if (!run && live && !confirm('REAL account! Start auto trading?')) return
               if (!run) { // every Start = fresh P/L and clean flags
                 const r = R.current
-                r.pnl = 0; r.n = 0; setStats({ n: 0, pnl: 0 })
+                r.pnl = 0; r.n = 0; r.w = 0; r.l = 0; setStats({ n: 0, pnl: 0, w: 0, l: 0 })
                 if (!r.open) { r.busy = false; r.selling = false }
                 addLog(`▶ Bot started — waiting for a barrier hit${+cfg.wait ? ` + ${cfg.wait} ticks` : ''} (now ${r.since > 900 ? '-' : r.since} ticks since last hit)`)
               }
