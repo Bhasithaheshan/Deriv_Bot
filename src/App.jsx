@@ -18,12 +18,11 @@ export default function App() {
     try { localStorage.setItem('page', p) } catch { /* ignore */ }
     window.history.replaceState(null, '', p === 'recovery' ? '#recovery' : window.location.pathname)
   }
-  return (
-    <div>
-      <nav className="tabs">
-        {TABS.map(([k, label]) => <button key={k} className={'tab' + (page === k ? ' on' : '')} onClick={() => go(k)}>{label}</button>)}
-      </nav>
-      {page === 'recovery' ? <Recovery key="recovery" /> : <Home key="home" />}
-    </div>
+  // the tab bar is rendered by each page, right UNDER its header (logo / login)
+  const tabs = (
+    <nav className="tabs">
+      {TABS.map(([k, label]) => <button key={k} className={'tab' + (page === k ? ' on' : '')} onClick={() => go(k)}>{label}</button>)}
+    </nav>
   )
+  return page === 'recovery' ? <Recovery key="recovery" tabs={tabs} /> : <Home key="home" tabs={tabs} />
 }

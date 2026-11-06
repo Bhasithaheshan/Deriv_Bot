@@ -169,7 +169,7 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
   )
 }
 
-export default function App() {
+export default function App({ tabs }) {
   const [cfg, setCfg] = useState({ symbol: 'R_100', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, qOn: false, qExit: true, qN: 20, qVol: 1.3, qTrend: 0.5, scanOn: false, autoSwitch: false, rotate: false })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
@@ -668,6 +668,7 @@ export default function App() {
           )}
         </div>
       </header>
+      {tabs}
 
       <div className="wrap">
         <div className="card">
