@@ -185,7 +185,7 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
 }
 
 export default function App() {
-  const [cfg, setCfg] = useState({ symbol: '1HZ100V', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, rr: true, rrTp: 10, rrEntry: 'hit', rrMult: 3, rrSteps: 3, rrMaxStake: 30, rrDigN: 500, qOn: false, qExit: true, qN: 20, qVol: 1.3, qTrend: 0.5, scanOn: true, autoSwitch: false, rotate: false })
+  const [cfg, setCfg] = useState({ symbol: '1HZ100V', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, rr: true, rrTp: 10, rrEntry: 'hit', rrMult: 3, rrSteps: 3, rrMaxStake: 30, rrDigN: 500, rrNeed: 2, qOn: false, qExit: true, qN: 20, qVol: 1.3, qTrend: 0.5, scanOn: true, autoSwitch: false, rotate: false })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
   const [bar, setBar] = useState(null)
@@ -270,8 +270,41 @@ export default function App() {
     setCfg(c => ({ ...c, symbol: b.sy }))
     addLog(`🔁 ${why} → switched to ${b.name}`)
   }
-  const stopRR = why => { const r = R.current; clearTimeout(r.recTimer); r.rec = null; r.recovering = false; setRecUi(null); setRun(false); addLog(why) }
-  const recWatch = () => { const r = R.current; clearTimeout(r.recTimer); r.recTimer = setTimeout(() => { if (r.rec) stopRR(`⚠️ Recovery stalled (no reply from Deriv) — bot stopped. Debt ≈ ${r.rec.debt.toFixed(2)}`) }, 25000) }
+  const stopRR = why => { const r = R.current; clearTimeout(r.recTimer); if (r.rec?.subId && r.rec.stage === 'wait') send({ forget: r.rec.subId }); r.rec = null; r.recovering = false; setRecUi(null); setRun(false); addLog(why) }
+  const recWatch = (ms = 25000) => {
+    const r = R.current; clearTimeout(r.recTimer)
+    r.recTimer = setTimeout(() => {
+      if (!r.rec) return
+      stopRR(r.rec.stage === 'wait' ? `⏱ No low-digit pattern within 5 minutes — bot stopped. Debt ≈ ${r.rec.debt.toFixed(2)}` : `⚠️ Recovery stalled (no reply from Deriv) — bot stopped. Debt ≈ ${r.rec.debt.toFixed(2)}`)
+    }, ms)
+  }
+  const recBadge = () => { const rec = R.current.rec; return rec ? { debt: rec.debt, stake: rec.stake, step: rec.step, name: rec.name, phase: rec.stage, seq: rec.seq || 0, need: rec.need, tape: (rec.tape || []).slice(-8) } : null }
+  const overQuote = () => { // live quote for the Over 2 contract, so the buy can go out the moment the pattern appears
+    const r = R.current, rec = r.rec
+    send({ proposal: 1, subscribe: 1, amount: rec.stake, basis: 'stake', contract_type: 'DIGITOVER', barrier: '2', duration: 1, duration_unit: 't', currency: r.cur || 'USD', underlying_symbol: rec.sym })
+  }
+  const fireOver = () => {
+    const r = R.current, rec = r.rec
+    if (!rec || rec.stage !== 'wait' || !rec.pid) return
+    rec.stage = 'buy'; rec.go = false
+    recWatch()
+    send({ buy: rec.pid, price: rec.stake })
+    if (rec.subId) send({ forget: rec.subId }) // quote stream no longer needed
+    addLog(`⚡ ${rec.need} low digits (0-1-2) in a row on ${rec.name} → buying Over 2 now`)
+    setRecUi(recBadge())
+  }
+  // called for every live tick of every scanned market: waits for N digits from 0-1-2 in a row on the recovery market
+  const onRecTick = (sy, dgt, epoch) => {
+    const r = R.current, rec = r.rec
+    if (!rec || rec.stage !== 'wait' || rec.sym !== sy) return
+    if (epoch && epoch <= (rec.lastEp || 0)) return
+    rec.lastEp = epoch || 0
+    rec.tape = [...(rec.tape || []).slice(-11), dgt]
+    rec.seq = dgt <= 2 ? (rec.seq || 0) + 1 : 0
+    if (rec.seq >= rec.need) { rec.go = true; fireOver() } // fires now, or as soon as the first quote arrives
+    setRecUi(recBadge())
+  }
+  R.current.onRecTick = onRecTick
   const pickDigitMarket = () => (R.current.digRows || []).filter(x => x.p != null).sort((a, b) => a.p - b.p)[0] || null
   const placeOver = () => {
     const r = R.current, c = C.current, rec = r.rec
@@ -280,11 +313,12 @@ export default function App() {
     if (rec.stake > (+c.rrMaxStake || 30)) return stopRR(`⛔ Recovery stake ${rec.stake.toFixed(2)} is above the cap (${c.rrMaxStake}) — bot stopped. Debt ≈ ${rec.debt.toFixed(2)}`)
     const pick = pickDigitMarket()
     if (!pick) return stopRR('⚠️ No digit statistics yet (scanner still loading) — bot stopped')
-    rec.sym = pick.sy; rec.name = pick.name; rec.stage = 'prop'; rec.pid = null; rec.cid = null
-    setRecUi({ debt: rec.debt, stake: rec.stake, step: rec.step, name: pick.name })
-    addLog(`🎲 Recovery step ${rec.step}: Over 2 on ${pick.name} (digits 0-2: ${(pick.p * 100).toFixed(1)}%) stake ${rec.stake.toFixed(2)}`)
-    recWatch()
-    send({ proposal: 1, amount: rec.stake, basis: 'stake', contract_type: 'DIGITOVER', barrier: '2', duration: 1, duration_unit: 't', currency: r.cur || 'USD', underlying_symbol: rec.sym })
+    rec.sym = pick.sy; rec.name = pick.name; rec.stage = 'wait'; rec.pid = null; rec.cid = null; rec.subId = null
+    rec.go = false; rec.seq = 0; rec.tape = []; rec.lastEp = 0; rec.fails = 0; rec.need = Math.max(1, Math.min(5, +c.rrNeed || 2))
+    setRecUi(recBadge())
+    addLog(`🎲 Recovery step ${rec.step}: ${pick.name} (digits 0-2: ${(pick.p * 100).toFixed(1)}%) — waiting for ${rec.need} digits from 0-1-2 in a row, then Over 2 (stake ${rec.stake.toFixed(2)})`)
+    recWatch(300000)
+    overQuote()
   }
   const startRecovery = loss => {
     const r = R.current, c = C.current
@@ -420,6 +454,12 @@ export default function App() {
     const m = JSON.parse(e.data), r = R.current
     if (m.error) {
       if (/not found among your open/i.test(m.error.message || '')) return // contract already closed; harmless
+      if (r.rec && r.rec.stage === 'buy' && m.echo_req?.buy && m.echo_req.buy === r.rec.pid && (r.rec.fails || 0) < 3) {
+        const rec = r.rec; rec.fails = (rec.fails || 0) + 1
+        addLog(`⚠️ Over 2 buy failed (${m.error.message || ''}) — waiting for the next pattern (${rec.fails}/3)`)
+        rec.stage = 'wait'; rec.pid = null; rec.subId = null; rec.go = false; rec.seq = 0; rec.tape = []
+        recWatch(300000); overQuote(); setRecUi(recBadge()); return
+      }
       if (r.rec && (m.echo_req?.contract_type === 'DIGITOVER' || (m.echo_req?.buy && m.echo_req.buy === r.rec.pid))) {
         stopRR(`❌ Over 2 failed: ${m.error.message || ''} — bot stopped. Debt ≈ ${r.rec.debt.toFixed(2)}`); return
       }
@@ -462,7 +502,10 @@ export default function App() {
       case 'proposal': {
         if (m.echo_req?.contract_type === 'DIGITOVER') { // recovery: quote for Over 2 -> buy it
           const rec = r.rec
-          if (rec && rec.stage === 'prop' && m.proposal?.id) { rec.pid = m.proposal.id; rec.stage = 'buy'; recWatch(); send({ buy: rec.pid, price: rec.stake }) }
+          if (rec && m.proposal?.id && m.echo_req.underlying_symbol === rec.sym && +m.echo_req.amount === rec.stake && rec.stage === 'wait') {
+            rec.pid = m.proposal.id; rec.subId = m.subscription?.id || rec.subId
+            if (rec.go) fireOver()
+          }
           break
         }
         const d = m.proposal.contract_details || {}
@@ -645,10 +688,15 @@ export default function App() {
       }
       if (m.msg_type === 'history' || m.msg_type === 'ticks_history') {
         const sy = er.ticks_history, d = D[sy]
-        if (d && m.history?.prices) { if (m.pip_size != null) d.pip = +m.pip_size; d.px = m.history.prices.map(Number).slice(-5000); d.t = +m.history.times[m.history.times.length - 1]; d.sub = true; d.err = ''; finish('h', sy) }
+        if (d && m.history?.prices) { if (m.pip_size != null) d.pip = +m.pip_size; d.px = m.history.prices.map(Number).slice(-5000); d.pipInf = Math.max(...d.px.map(decimals)); d.t = +m.history.times[m.history.times.length - 1]; d.sub = true; d.err = ''; finish('h', sy) }
       } else if (m.msg_type === 'tick') {
-        const d = D[er.ticks_history || er.ticks || m.tick.symbol]
-        if (d && m.tick.epoch > d.t) { if (m.tick.pip_size != null) d.pip = +m.tick.pip_size; d.t = m.tick.epoch; d.px.push(+m.tick.quote); if (d.px.length > 5000) d.px.shift() }
+        const key = er.ticks_history || er.ticks || m.tick.symbol, d = D[key]
+        if (d && m.tick.epoch > d.t) {
+          if (m.tick.pip_size != null) d.pip = +m.tick.pip_size
+          d.t = m.tick.epoch; d.px.push(+m.tick.quote); if (d.px.length > 5000) d.px.shift()
+          const dp = d.pip != null ? d.pip : d.pipInf != null ? d.pipInf : decimals(+m.tick.quote)
+          R.current.onRecTick?.(key, +(+m.tick.quote).toFixed(dp).slice(-1), m.tick.epoch)
+        }
       } else if (m.msg_type === 'proposal') {
         const sy = er.underlying_symbol, d = D[sy], cd = m.proposal?.contract_details
         if (d && cd?.high_barrier && +er.growth_rate !== +C.current.growth) finish('p', sy) // answer for an old growth rate: ignore, it gets re-requested
@@ -757,7 +805,14 @@ export default function App() {
           <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} vis={vis} onZoom={onZoom} onReset={onReset} />
           <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
             <span>Trades {stats.n} | <b className="g">Win {stats.w}</b> | <b className="r">Loss {stats.l}</b>{stats.n > 0 && <span className="muted"> ({Math.round((stats.w / stats.n) * 100)}%)</span>} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b> <button className="mini" onClick={resetBot} title="Reset P/L and bot state">↺ Reset</button></span></div>
-          {recUi && <div className="qbadge r">🛠 Recovery step {recUi.step}/{cfg.rrSteps} · debt {recUi.debt.toFixed(2)} · Over 2 on {recUi.name} · stake {recUi.stake.toFixed(2)}</div>}
+          {recUi && (
+            <div className="qbadge r">
+              🛠 Recovery step {recUi.step}/{cfg.rrSteps} · debt {recUi.debt.toFixed(2)} · Over 2 on {recUi.name} · stake {recUi.stake.toFixed(2)}
+              {recUi.phase === 'wait' && <> · ⏳ waiting for {recUi.need} low digits (0-1-2) in a row: {recUi.seq}/{recUi.need}</>}
+              {recUi.phase === 'buy' && <> · ⚡ buying</>}
+              {recUi.tape?.length > 0 && <div className="tape">Last digits: {recUi.tape.map((d, i) => <b key={i} className={d <= 2 ? 'low' : ''}>{d}</b>)}</div>}
+            </div>
+          )}
           {quality && (
             <div className={'qbadge ' + (quality.ok ? 'g' : 'r')}>
               {quality.ok ? '✅' : '⛔'} Market quality: volatility {quality.volX.toFixed(2)}× · trend {quality.er.toFixed(2)}
@@ -815,13 +870,14 @@ export default function App() {
               {cfg.rr && (
                 <div className="qparams">
                   <span>Entry <select className="mini-sel" value={cfg.rrEntry} onChange={set('rrEntry')}><option value="hit">after barrier hit</option><option value="now">immediately</option></select></span>
+                  <span>Low digits in a row <input type="number" min="1" max="5" className="mini-in" value={cfg.rrNeed} onChange={set('rrNeed')} /> before Over 2</span>
                   <span>Recovery stake × <input type="number" min="1" step="0.5" className="mini-in" value={cfg.rrMult} onChange={set('rrMult')} /></span>
                   <span>Max steps <input type="number" min="1" className="mini-in" value={cfg.rrSteps} onChange={set('rrSteps')} /></span>
                   <span>Max recovery stake <input type="number" min="1" className="mini-in" value={cfg.rrMaxStake} onChange={set('rrMaxStake')} /> USD</span>
                   <span>Digit window <input type="number" min="100" className="mini-in" value={cfg.rrDigN} onChange={set('rrDigN')} /> ticks</span>
                 </div>
               )}
-              <small>Accumulator closes at take profit, then the next 1s market. On a barrier-hit loss: Over 2 (1 tick) on the market with the fewest 0-1-2 digits, stake × multiplier each loss, until recovered. Session target = "Stop at profit".</small>
+              <small>Accumulator closes at take profit, then the next 1s market. On a barrier-hit loss: pick the market with the fewest 0-1-2 digits, wait there until N digits from 0-1-2 appear in a row, then Over 2 (1 tick). Stake × multiplier each loss, until recovered. Session target = "Stop at profit".</small>
             </div>
           </div>
           <button className={'cta' + (run ? ' stop' : '')} disabled={!trading}
