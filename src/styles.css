@@ -92,3 +92,4 @@ input,select{width:100%;padding:9px;background:#0e1116;color:#fff;border:1px sol
 .grp{font-size:11px;color:#8b95a5;margin-left:8px}
 .tbtn{margin:0 0 10px;padding:10px 18px;border:0;border-radius:22px;background:#e00;color:#fff;font-weight:700;cursor:pointer}
 .tbtn.alt{background:#232a35}.tbtn:disabled{opacity:.5;cursor:not-allowed}
+.rstep{margin-left:12px}

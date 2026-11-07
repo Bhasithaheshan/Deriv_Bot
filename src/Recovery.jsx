@@ -199,6 +199,7 @@ export default function App({ tabs }) {
   const [menu, setMenu] = useState(false)   // account dropdown
   const [scan, setScan] = useState({}) // market scanner results
   const [recUi, setRecUi] = useState(null) // recovery status badge
+  const [recStats, setRecStats] = useState({ done: {}, failed: 0 }) // how many recoveries finished at step 1 / 2 / 3 ...
   const [quality, setQuality] = useState(null) // current market quality (volatility / trend)
   const scanApi = useRef(null)
   const firstGrowth = useRef(true)
@@ -270,7 +271,8 @@ export default function App({ tabs }) {
     setCfg(c => ({ ...c, symbol: b.sy }))
     addLog(`🔁 ${why} → switched to ${b.name}`)
   }
-  const stopRR = why => { const r = R.current; clearTimeout(r.recTimer); if (r.rec?.subId && r.rec.stage === 'wait') send({ forget: r.rec.subId }); r.rec = null; r.recovering = false; setRecUi(null); setRun(false); addLog(why) }
+  const pushRecStats = () => setRecStats({ done: { ...(R.current.recDone || {}) }, failed: R.current.recFail || 0 })
+  const stopRR = why => { const r = R.current; if (r.rec) { r.recFail = (r.recFail || 0) + 1; pushRecStats() } clearTimeout(r.recTimer); if (r.rec?.subId && r.rec.stage === 'wait') send({ forget: r.rec.subId }); r.rec = null; r.recovering = false; setRecUi(null); setRun(false); addLog(why) }
   const recWatch = (ms = 25000) => {
     const r = R.current; clearTimeout(r.recTimer)
     r.recTimer = setTimeout(() => {
@@ -334,8 +336,9 @@ export default function App({ tabs }) {
     addLog(`${profit >= 0 ? '✅ Over 2 WIN' : '🔴 Over 2 LOSS'}  ${profit.toFixed(2)}`)
     if (profit > 0) rec.debt -= profit; else rec.debt += rec.stake
     if (profit > 0 && rec.debt <= 0.005) { // recovered -> normal accumulator trading again
+      r.recDone = r.recDone || {}; r.recDone[rec.step] = (r.recDone[rec.step] || 0) + 1; pushRecStats() // recovered at this step
       r.rec = null; r.recovering = false; setRecUi(null)
-      addLog('✅ Loss recovered — back to normal accumulator trading')
+      addLog(`✅ Loss recovered at step ${rec.step} — back to normal accumulator trading`)
       if (r.pnl >= lim(c.maxProfit)) { setRun(false); addLog(`🎯 Profit target reached (+${r.pnl.toFixed(2)}) — bot stopped`); return }
       rotateMarket(); return
     }
@@ -348,6 +351,7 @@ export default function App({ tabs }) {
     const r = R.current
     if (r.open) { addLog('⚠️ A trade is still open — wait until it closes, then press Reset'); return }
     setRun(false); clearTimeout(r.recTimer); r.rec = null; r.recovering = false; setRecUi(null)
+    r.recDone = {}; r.recFail = 0; setRecStats({ done: {}, failed: 0 })
     r.pnl = 0; r.n = 0; r.w = 0; r.l = 0; r.busy = false; r.selling = false; r.inTicks = 0
     setStats({ n: 0, pnl: 0, w: 0, l: 0 }); setMarks([])
     subProposal() // fresh proposal stream
@@ -804,7 +808,7 @@ export default function App({ tabs }) {
         <div className="card">
           <div className="row"><b>{Object.keys(MARKETS).find(k => MARKETS[k] === cfg.symbol)}</b><span>{ticks.at(-1)?.q.toFixed(2)}</span></div>
           <Chart ticks={ticks} bar={bar} hit={hit} marks={marks} vis={vis} onZoom={onZoom} onReset={onReset} />
-          <div className="row"><span>Ticks since barrier hit: {R.current.since > 900 ? '-' : R.current.since}</span>
+          <div className="row"><span>🛠 Recovered at{Array.from({ length: Math.min(6, Math.max(1, +cfg.rrSteps || 3)) }, (_, i) => i + 1).map(k => <span key={k} className="rstep">step {k}: <b className="g">{recStats.done[k] || 0}</b></span>)}{recStats.failed > 0 && <span className="rstep">· failed: <b className="r">{recStats.failed}</b></span>}</span>
             <span>Trades {stats.n} | <b className="g">Win {stats.w}</b> | <b className="r">Loss {stats.l}</b>{stats.n > 0 && <span className="muted"> ({Math.round((stats.w / stats.n) * 100)}%)</span>} | P/L <b className={stats.pnl >= 0 ? 'g' : 'r'}>{stats.pnl.toFixed(2)}</b> <button className="mini" onClick={resetBot} title="Reset P/L and bot state">↺ Reset</button></span></div>
           {recUi && (
             <div className="qbadge r">
@@ -887,7 +891,7 @@ export default function App({ tabs }) {
               if (!run && live && !confirm('REAL account! Start auto trading?')) return
               if (!run) { // every Start = fresh P/L and clean flags
                 const r = R.current
-                r.pnl = 0; r.n = 0; r.w = 0; r.l = 0; setStats({ n: 0, pnl: 0, w: 0, l: 0 })
+                r.pnl = 0; r.n = 0; r.w = 0; r.l = 0; r.recDone = {}; r.recFail = 0; setStats({ n: 0, pnl: 0, w: 0, l: 0 }); setRecStats({ done: {}, failed: 0 })
                 if (!r.open) { r.busy = false; r.selling = false }
                 addLog(`▶ Bot started — waiting for a barrier hit${+cfg.wait ? ` + ${cfg.wait} ticks` : ''} (now ${r.since > 900 ? '-' : r.since} ticks since last hit)`)
               }
