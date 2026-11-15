@@ -72,7 +72,7 @@ export class DiffersEngine {
   _prepare() {
     if (this.phase !== 'running') return
     const run = this.plan.runs[this.idx], row = this.rows[this.idx]
-    const digits = this.feed.lastDigits(run.sy, 100)
+    const digits = this.feed.lastDigits(run.sy, 30)
     if (!digits) {
       this.waitFeed++
       if (this.waitFeed === 1) this.log(`⏳ Run ${this.idx + 1}: waiting for ${this.name(run.sy)} tick data…`)
@@ -81,7 +81,7 @@ export class DiffersEngine {
     }
     const pk = pickDigit(digits)
     row.digit = pk.digit; row.share = pk.share; this.stage = 'prop'
-    this.log(`🎯 Run ${this.idx + 1}/${this.plan.runs.length}: ${this.name(run.sy)} · Differs ${pk.digit} (${Math.round(pk.share * 100)}% in the last 100 ticks) · ${run.ticks} ticks · stake ${this.plan.stake}`)
+    this.log(`🎯 Run ${this.idx + 1}/${this.plan.runs.length}: ${this.name(run.sy)} · Differs ${pk.digit} (${Math.round(pk.share * 100)}% in the last 30 ticks) · ${run.ticks} ticks · stake ${this.plan.stake}`)
     this.send({ proposal: 1, amount: this.plan.stake, basis: 'stake', contract_type: 'DIGITDIFF', barrier: String(pk.digit), duration: run.ticks, duration_unit: 't', currency: this.cur(), underlying_symbol: run.sy, req_id: REQ.RUN_PROP })
     this._watch(20000, `⚠️ No quote from Deriv for run ${this.idx + 1} — session stopped`)
     this.emit()

@@ -141,11 +141,11 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
             </div>
 
             <div className="card">
-              <h3>PLAN <span className="muted" style={{ fontWeight: 400, letterSpacing: 0 }}>· the Differs digit is picked at purchase time: the LOWEST share in that market's last 100 ticks</span></h3>
+              <h3>PLAN <span className="muted" style={{ fontWeight: 400, letterSpacing: 0 }}>· the Differs digit is picked at purchase time: the LOWEST share in that market's last 30 ticks</span></h3>
               {plan ? (
                 <div className="plan">
                   {plan.runs.map((r, i) => {
-                    const dg = feed.lastDigits(r.sy, 100), pk = dg ? pickDigit(dg) : null
+                    const dg = feed.lastDigits(r.sy, 30), pk = dg ? pickDigit(dg) : null
                     return (
                       <div key={i} className="pl">
                         <b>Run {i + 1}</b><span>{SHORT(r.sy)}</span><span className="mono">{r.ticks} ticks</span>
@@ -230,15 +230,15 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
               )}
 
               {cur && (() => {
-                const dg = feed.lastDigits(cur.sy, 100)
+                const dg = feed.lastDigits(cur.sy, 30)
                 if (!dg) return null
                 const counts = new Array(10).fill(0); dg.forEach(d => counts[d]++)
                 const min = Math.min(...counts)
                 return (
                   <div className="card">
-                    <div className="tnote muted" style={{ marginBottom: 8 }}>Digits in the last 100 ticks · {SHORT(cur.sy)} (the lowest share is the Differs digit)</div>
+                    <div className="tnote muted" style={{ marginBottom: 8 }}>Digits in the last 30 ticks · {SHORT(cur.sy)} (the lowest share is the Differs digit)</div>
                     <div className="dbars">
-                      {counts.map((c, d) => <div key={d} className={'dbar' + (c === min ? ' min' : '')}><i style={{ height: `${Math.min(100, c * 4)}%` }} /><b>{d}</b><span>{c}%</span></div>)}
+                      {counts.map((c, d) => <div key={d} className={'dbar' + (c === min ? ' min' : '')}><i style={{ height: `${Math.min(100, c * (100/30 * 3))}%` }} /><b>{d}</b><span>{Math.round(c/30*100)}%</span></div>)}
                     </div>
                   </div>
                 )
