@@ -146,28 +146,38 @@ export function AccountBar({ d }) {
   const tok = store.get('tok')
   const [editingCap, setEditingCap] = useState(false)
   const [capInput, setCapInput] = useState('')
+  const [, forceUpdate] = useState(0)
 
   // Load saved custom capital from localStorage
   const savedCap = store.get('customCapital')
   const customCap = savedCap ? parseFloat(savedCap) : null
 
-  // Current live balance as a number
+  // Current live balance as a number (from Deriv WebSocket)
   const liveBal = d.balance ? parseFloat(d.balance) : null
 
-  // P&L relative to custom capital
-  const pnl = (customCap != null && liveBal != null) ? liveBal - customCap : null
+  // What to show as the main balance:
+  // If custom capital is set → show that (overrides Deriv display)
+  // Otherwise → show real Deriv balance
+  const displayBal = customCap != null
+    ? `${customCap.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`
+    : (d.balance || '...')
 
   const openEdit = e => {
     e.stopPropagation()
-    setCapInput(customCap != null ? String(customCap) : (liveBal != null ? String(liveBal) : '10000'))
+    setCapInput(customCap != null ? String(customCap) : (liveBal != null ? String(Math.round(liveBal)) : '10000'))
     setEditingCap(true)
   }
   const saveCap = () => {
     const v = parseFloat(capInput)
-    if (!isNaN(v) && v > 0) store.set('customCapital', String(v))
+    if (!isNaN(v) && v > 0) { store.set('customCapital', String(v)); forceUpdate(n => n + 1) }
     setEditingCap(false)
   }
-  const clearCap = e => { e.stopPropagation(); store.del('customCapital'); setEditingCap(false) }
+  const clearCap = e => {
+    e.stopPropagation()
+    store.del('customCapital')
+    setEditingCap(false)
+    forceUpdate(n => n + 1)
+  }
 
   return (
     <div className="topright" onClick={e => e.stopPropagation()}>
@@ -182,14 +192,15 @@ export function AccountBar({ d }) {
             <div className="acctwrap">
               <button className="acct" onClick={() => d.setMenu(m => !m)}>
                 <span className="acctin">
-                  <span className={'alab ' + (d.live ? 'real' : 'demo')}>{d.live ? 'Real account' : 'Demo account'}</span>
-                  <b>{d.balance || '...'}</b>
-                  {/* Capital & P&L row — only for demo */}
-                  {!d.live && customCap != null && pnl != null && (
-                    <span style={{ fontSize: 11, color: pnl >= 0 ? '#2ecc71' : '#ff5555', marginTop: 1 }}>
-                      Cap: ${customCap.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} · P&L: {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-                    </span>
-                  )}
+                  <span className={'alab ' + (d.live ? 'real' : 'demo')}>
+                    {d.live ? 'Real account' : 'Demo account'}
+                    {!d.live && customCap != null && (
+                      <span style={{ marginLeft: 6, fontWeight: 400, color: '#8b95a5', fontSize: 11 }}>
+                        (Actual: {d.balance || '…'})
+                      </span>
+                    )}
+                  </span>
+                  <b>{displayBal}</b>
                 </span>
                 <span className="chev">⌄</span>
               </button>
@@ -205,24 +216,31 @@ export function AccountBar({ d }) {
                   {/* Custom capital editor — demo only */}
                   {!d.live && (
                     <div style={{ borderTop: '1px solid #2a303a', margin: '6px 0 0', padding: '10px 12px' }} onClick={e => e.stopPropagation()}>
-                      <div style={{ fontSize: 12, color: '#8b95a5', marginBottom: 6 }}>💰 Starting Capital (USD)</div>
+                      <div style={{ fontSize: 12, color: '#8b95a5', marginBottom: 6 }}>💰 Set display balance (USD)</div>
                       {editingCap ? (
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                           <input
                             autoFocus
-                            type="number" min="1" step="0.01"
+                            type="number" min="0.01" step="0.01"
                             value={capInput}
                             onChange={e => setCapInput(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') saveCap(); if (e.key === 'Escape') setEditingCap(false) }}
                             style={{ flex: 1, padding: '5px 8px', fontSize: 14, fontWeight: 700, background: '#0e1116', color: '#fff', border: '1px solid #2a9df4', borderRadius: 6 }}
                           />
                           <button onClick={saveCap} style={{ padding: '5px 10px', borderRadius: 6, border: 0, background: '#2a9df4', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>✓</button>
-                          <button onClick={clearCap} style={{ padding: '5px 8px', borderRadius: 6, border: 0, background: '#333', color: '#aaa', cursor: 'pointer' }}>✕</button>
+                          <button onClick={clearCap} title="Reset to real balance" style={{ padding: '5px 8px', borderRadius: 6, border: 0, background: '#333', color: '#aaa', cursor: 'pointer' }}>✕</button>
                         </div>
                       ) : (
                         <button onClick={openEdit} style={{ width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: '1px dashed #2a303a', background: 'transparent', color: customCap != null ? '#fff' : '#5d6878', cursor: 'pointer', fontSize: 13 }}>
-                          {customCap != null ? `$${customCap.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} ✏️` : '+ Set starting capital'}
+                          {customCap != null
+                            ? `$${customCap.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ✏️ (click to change)`
+                            : '+ Set custom display balance'}
                         </button>
+                      )}
+                      {customCap != null && (
+                        <div style={{ marginTop: 6, fontSize: 11, color: '#5d6878' }}>
+                          Real balance: {d.balance || '…'} · <span style={{ color: '#8b95a5', cursor: 'pointer', textDecoration: 'underline' }} onClick={clearCap}>Reset to real</span>
+                        </div>
                       )}
                     </div>
                   )}
