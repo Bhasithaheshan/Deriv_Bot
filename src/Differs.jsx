@@ -6,7 +6,7 @@ import { DiffersEngine, buildPlan, pickDigit } from './differsEngine.js'
 const SYMS = ['1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V']
 const NAME = { '1HZ10V': 'Volatility 10 (1s) Index', '1HZ25V': 'Volatility 25 (1s) Index', '1HZ50V': 'Volatility 50 (1s) Index', '1HZ75V': 'Volatility 75 (1s) Index', '1HZ100V': 'Volatility 100 (1s) Index' }
 const SHORT = sy => NAME[sy].replace('Volatility ', 'V').replace(' Index', '')
-const DEF = { runs: 5, ticks: Array(10).fill(5), mk: [...SYMS], stake: 1, tp: 3, sl: 5, rec: { on: false, mult: 3, steps: 3, maxStake: 30, need: 2, watch: 2, digN: 500 } }
+const DEF = { runs: 5, ticks: Array(10).fill(5), mk: [...SYMS], stake: 1, tp: 3, sl: 5, rec: { on: false, mult: 3, steps: 3, maxStake: 30, need: 2, needOn: true, watch: 2, digN: 500 } }
 const loadCfg = () => {
   try { const s = JSON.parse(localStorage.getItem('diffCfg')); return s ? { ...DEF, ...s, ticks: [...(s.ticks || []), ...DEF.ticks].slice(0, 10), rec: { ...DEF.rec, ...(s.rec || {}) } } : DEF } catch { return DEF }
 }
@@ -116,7 +116,17 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                       <div><label title="Recovery stake multiplier after each loss (step 1 Over 2, step 2 Under 7, step 3 Over 2 ...)">Recovery stake ×</label><input type="number" min="1" step="0.5" value={cfg.rec.mult} onChange={e => updRec('mult', e.target.value)} /></div>
                       <div><label title="Maximum recovery attempts (alternating Over 2 / Under 7, a different market each step)">Max steps</label><input type="number" min="1" value={cfg.rec.steps} onChange={e => updRec('steps', e.target.value)} /></div>
                       <div><label title="Session stops if the next Over 2 stake would be above this">Max rec. stake ($)</label><input type="number" min="1" value={cfg.rec.maxStake} onChange={e => updRec('maxStake', e.target.value)} /></div>
-                      <div><label title="Digits in a row before the recovery trade is bought: 0-1-2 for Over 2 steps, 7-8-9 for Under 7 steps">Digits in a row</label><input type="number" min="1" max="5" value={cfg.rec.need} onChange={e => updRec('need', e.target.value)} /></div>
+                      <div><label title="Digits in a row before the recovery trade is bought: 0-1-2 for Over 2 steps, 7-8-9 for Under 7 steps">Digits in a row</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <button
+                            title={cfg.rec.needOn ? 'ON: waits for digit pattern before buying' : 'OFF: buys immediately without waiting for a digit pattern'}
+                            onClick={() => updRec('needOn', !cfg.rec.needOn)}
+                            style={{ padding: '4px 10px', borderRadius: 14, border: 0, fontWeight: 700, fontSize: 12, cursor: 'pointer', background: cfg.rec.needOn ? '#1fd15a' : '#555', color: '#fff', whiteSpace: 'nowrap' }}>
+                            {cfg.rec.needOn ? 'ON' : 'OFF'}
+                          </button>
+                          <input type="number" min="1" max="5" value={cfg.rec.need} onChange={e => updRec('need', e.target.value)} disabled={!cfg.rec.needOn} style={{ opacity: cfg.rec.needOn ? 1 : 0.4 }} />
+                        </div>
+                      </div>
                       <div><label title="Minutes to watch each market before moving to the next-lowest 0-1-2 market">Watch / market (min)</label><input type="number" min="0.1" max="30" step="0.5" value={cfg.rec.watch} onChange={e => updRec('watch', e.target.value)} /></div>
                       <div><label title="Ticks used to find the market with the fewest 0-1-2 digits">Digit window</label><input type="number" min="100" value={cfg.rec.digN} onChange={e => updRec('digN', e.target.value)} /></div>
                     </div>

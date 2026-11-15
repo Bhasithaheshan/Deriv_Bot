@@ -191,7 +191,7 @@ function Chart({ ticks: all, bar, hit, marks, vis, onZoom, onReset }) {
 }
 
 export default function App({ tabs }) {
-  const [cfg, setCfg] = useState({ symbol: '1HZ100V', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, rr: true, rrTp: 10, rrEntry: 'hit', rrMult: 3, rrSteps: 3, rrMaxStake: 30, rrDigN: 500, rrNeed: 2, rrWatch: 2, qOn: false, qExit: true, qN: 20, qVol: 1.3, qTrend: 0.5, scanOn: true, autoSwitch: false, rotate: false })
+  const [cfg, setCfg] = useState({ symbol: '1HZ100V', growth: 0.01, target: 2, wait: 0, stake: 1, maxLoss: 5, maxProfit: 5, rr: true, rrTp: 10, rrEntry: 'hit', rrMult: 3, rrSteps: 3, rrMaxStake: 30, rrDigN: 500, rrNeed: 2, rrNeedOn: true, rrWatch: 2, qOn: false, qExit: true, qN: 20, qVol: 1.3, qTrend: 0.5, scanOn: true, autoSwitch: false, rotate: false })
   const [run, setRun] = useState(false)
   const [ticks, setTicks] = useState([])
   const [bar, setBar] = useState(null)
@@ -325,7 +325,7 @@ export default function App({ tabs }) {
     if (!rec || rec.stage !== 'wait') return
     rec.idx = idx; const o = rec.order[idx]; rec.sym = o.sy; rec.name = o.name; rec.go = false
     setRecUi(recBadge())
-    if (runOf(rec.kind, rec.sym) >= rec.need) { rec.go = true; fireOver() } // the pattern is already there
+    if (rec.need === 0 || runOf(rec.kind, rec.sym) >= rec.need) { rec.go = true; fireOver() } // the pattern is already there (or no pattern needed)
     if (rec.stage !== 'wait') return
     clearTimeout(r.hopTimer)
     r.hopTimer = setTimeout(() => { if (R.current.rec === rec && rec.stage === 'wait') focusMarket((rec.idx + 1) % rec.order.length) }, Math.max(5000, (+C.current.rrWatch || 2) * 60000))
@@ -339,7 +339,7 @@ export default function App({ tabs }) {
     r.tapes[sy] = [...(r.tapes[sy] || []).slice(-11), dgt]
     const rec = r.rec
     if (!rec || rec.stage !== 'wait' || rec.sym !== sy) return
-    if (runOf(rec.kind, sy) >= rec.need) { rec.go = true; fireOver() }
+    if (rec.need === 0 || runOf(rec.kind, sy) >= rec.need) { rec.go = true; fireOver() }
     setRecUi(recBadge())
   }
   R.current.onRecTick = onRecTick
@@ -354,7 +354,7 @@ export default function App({ tabs }) {
     if (!order.length && (rec.used || []).length) { rec.used = []; order = (r.digRows || []).filter(x => share(x) != null).sort((a, b) => share(a) - share(b)) } // all markets used: start over
     if (!order.length) return stopRR('⚠️ No digit statistics yet (scanner still loading) — bot stopped')
     rec.order = order; rec.stage = 'wait'; rec.pid = null; rec.cid = null; rec.fails = 0; rec.go = false
-    rec.need = Math.max(1, Math.min(5, +c.rrNeed || 2))
+    rec.need = c.rrNeedOn === false ? 0 : Math.max(1, Math.min(5, +c.rrNeed || 2))
     addLog(`🎲 Recovery step ${rec.step}: ${K.label} stake ${rec.stake.toFixed(2)} — need ${rec.need} ${K.word} digits (${K.dig}) in a row, ${+c.rrWatch || 2} min per market, new market each step, order: ${order.map(o => `${o.name.replace(' Index', '')} ${(share(o) * 100).toFixed(0)}%`).join(' → ')}`)
     recWatch(waitMs())
     subAllQuotes()
@@ -918,7 +918,17 @@ export default function App({ tabs }) {
             <div><label title="Session target: bot stops when the total profit reaches this (USD)">Profit target ($)</label><input type="number" min="0" value={cfg.maxProfit} onChange={set('maxProfit')} /></div>
             <div><label title="When a new accumulator trade is opened">Entry</label>
               <select value={cfg.rrEntry} onChange={set('rrEntry')}><option value="hit">after barrier hit</option><option value="now">immediately</option></select></div>
-            <div><label title="Digits in a row before the recovery trade is bought: 0-1-2 for the Over 2 steps, 7-8-9 for the Under 7 steps">Digits in a row</label><input type="number" min="1" max="5" value={cfg.rrNeed} onChange={set('rrNeed')} /></div>
+            <div><label title="Digits in a row before the recovery trade is bought: 0-1-2 for the Over 2 steps, 7-8-9 for the Under 7 steps">Digits in a row</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button
+                  title={cfg.rrNeedOn ? 'ON: waits for digit pattern before buying' : 'OFF: buys immediately without waiting for a digit pattern'}
+                  onClick={() => setCfg(c => ({ ...c, rrNeedOn: !c.rrNeedOn }))}
+                  style={{ padding: '4px 10px', borderRadius: 14, border: 0, fontWeight: 700, fontSize: 12, cursor: 'pointer', background: cfg.rrNeedOn ? '#1fd15a' : '#555', color: '#fff', whiteSpace: 'nowrap' }}>
+                  {cfg.rrNeedOn ? 'ON' : 'OFF'}
+                </button>
+                <input type="number" min="1" max="5" value={cfg.rrNeed} onChange={set('rrNeed')} disabled={!cfg.rrNeedOn} style={{ opacity: cfg.rrNeedOn ? 1 : 0.4 }} />
+              </div>
+            </div>
             <div><label title="Minutes to watch each market before moving to the next-lowest 0-1-2 market">Watch / market (min)</label><input type="number" min="0.1" max="30" step="0.5" value={cfg.rrWatch} onChange={set('rrWatch')} /></div>
             <div><label title="Recovery stake multiplier after each loss (step 1 Over 2, step 2 Under 7, step 3 Over 2 ...)">Recovery stake ×</label><input type="number" min="1" step="0.5" value={cfg.rrMult} onChange={set('rrMult')} /></div>
             <div><label title="Maximum recovery attempts (alternating Over 2 / Under 7, a different market each step)">Max steps</label><input type="number" min="1" value={cfg.rrSteps} onChange={set('rrSteps')} /></div>

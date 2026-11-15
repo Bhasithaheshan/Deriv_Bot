@@ -20,13 +20,13 @@ export const pickDigit = digits => {
   return { digit: best, share: min / digits.length, counts }
 }
 
-// cfg: { runs, ticks[], markets[], stake, tp, sl, rec:{on, mult, steps, maxStake, need, watch, digN} }
+// cfg: { runs, ticks[], markets[], stake, tp, sl, rec:{on, mult, steps, maxStake, need, needOn, watch, digN} }
 export const buildPlan = cfg => {
   const n = Math.max(1, Math.min(10, +cfg.runs || 1)), mk = cfg.markets.length ? cfg.markets : []
   return {
     runs: Array.from({ length: n }, (_, i) => ({ ticks: Math.max(1, Math.min(10, Math.round(+cfg.ticks[i]) || 5)), sy: mk[i % mk.length] })),
     stake: +cfg.stake, tp: +cfg.tp || 0, sl: +cfg.sl || 0,
-    rec: { on: !!cfg.rec.on, mult: +cfg.rec.mult || 3, steps: Math.max(1, +cfg.rec.steps || 3), maxStake: +cfg.rec.maxStake || 30, need: Math.max(1, Math.min(5, +cfg.rec.need || 2)), watch: Math.max(0.1, +cfg.rec.watch || 2), digN: Math.max(100, +cfg.rec.digN || 500) },
+    rec: { on: !!cfg.rec.on, mult: +cfg.rec.mult || 3, steps: Math.max(1, +cfg.rec.steps || 3), maxStake: +cfg.rec.maxStake || 30, needOn: cfg.rec.needOn !== false, need: Math.max(1, Math.min(5, +cfg.rec.need || 2)), watch: Math.max(0.1, +cfg.rec.watch || 2), digN: Math.max(100, +cfg.rec.digN || 500) },
   }
 }
 
@@ -177,14 +177,14 @@ export class DiffersEngine {
     if (rec.subId) this.send({ forget: rec.subId })
     const o = rec.order[i]; rec.idx = i; rec.sym = o.sy; rec.name = o.name; rec.go = false; rec.q = null; rec.subId = null
     this.send({ proposal: 1, subscribe: 1, amount: rec.stake, basis: 'stake', contract_type: KIND[rec.kind].type, barrier: KIND[rec.kind].barrier, duration: 1, duration_unit: 't', currency: this.cur(), underlying_symbol: rec.sym, req_id: REQ.REC_QUOTE })
-    if (this._run(rec.kind, rec.sym) >= c.need) rec.go = true // the pattern is already there: buy as soon as the quote arrives
+    if (this._run(rec.kind, rec.sym) >= c.need || !c.needOn) rec.go = true // the pattern is already there (or digit-wait is OFF): buy as soon as the quote arrives
     this.hop = this.set(() => { if (this.rec === rec && rec.stage === 'wait' && this.phase === 'running') this._focus((rec.idx + 1) % rec.order.length) }, Math.max(5000, c.watch * 60000))
     this.emit()
   }
   onTick(sy) { // called by the feed for every live tick of every market
     const rec = this.rec
     if (this.phase !== 'running' || !rec || rec.stage !== 'wait' || rec.sym !== sy) return
-    if (this._run(rec.kind, sy) >= this.plan.rec.need) { rec.go = true; this._fire() }
+    if (this._run(rec.kind, sy) >= this.plan.rec.need || !this.plan.rec.needOn) { rec.go = true; this._fire() }
     this.emit()
   }
   _fire() {
