@@ -803,6 +803,22 @@ export default function App({ tabs }) {
   const live = acct && !acct.demo
   const trading = !!acct && R.current.trading
 
+  // ── Virtual capital (shared localStorage with Differs Hunter) ──
+  const [editingCap, setEditingCap] = useState(false)
+  const [capInput, setCapInput] = useState('')
+  const [, forceCapUpdate] = useState(0)
+  const savedOffset = store.get('balanceOffset')
+  const balOffset = savedOffset != null ? parseFloat(savedOffset) : null
+  const customCap = store.get('customCapital') != null ? parseFloat(store.get('customCapital')) : null
+  const liveBal = balance ? parseFloat(balance) : null
+  const virtualBal = (balOffset != null && liveBal != null) ? liveBal + balOffset : null
+  const fmtUSD = v => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const displayBal = virtualBal != null ? `${fmtUSD(virtualBal)} USD` : (balance || '...')
+  const capPnl = (virtualBal != null && customCap != null) ? virtualBal - customCap : null
+  const openCapEdit = e => { e.stopPropagation(); setCapInput(customCap != null ? String(customCap) : (liveBal != null ? String(Math.round(liveBal)) : '10000')); setEditingCap(true) }
+  const saveCap = () => { const v = parseFloat(capInput); if (!isNaN(v) && v > 0 && liveBal != null) { const off = v - liveBal; store.set('customCapital', String(v)); store.set('balanceOffset', String(off)); forceCapUpdate(n => n + 1) }; setEditingCap(false) }
+  const clearCap = e => { e.stopPropagation(); store.del('customCapital'); store.del('balanceOffset'); setEditingCap(false); forceCapUpdate(n => n + 1) }
+
   return (
     <div onClick={() => setMenu(false)}>
       <header className="top">
@@ -822,7 +838,12 @@ export default function App({ tabs }) {
                 <button className="acct" onClick={() => setMenu(m => !m)}>
                   <span className="acctin">
                     <span className={'alab ' + (live ? 'real' : 'demo')}>{live ? 'Real account' : 'Demo account'}</span>
-                    <b>{balance || '...'}</b>
+                    <b>{displayBal}</b>
+                    {capPnl != null && (
+                      <span style={{ fontSize: 11, color: capPnl >= 0 ? '#2ecc71' : '#ff5555', marginTop: 1, display: 'block' }}>
+                        {capPnl >= 0 ? '▲ +' : '▼ '}{fmtUSD(Math.abs(capPnl))} {capPnl >= 0 ? 'profit' : 'loss'}
+                      </span>
+                    )}
                   </span>
                   <span className="chev">⌄</span>
                 </button>
@@ -835,6 +856,30 @@ export default function App({ tabs }) {
                         <b>{a.id === acct?.id ? balance : `${a.bal ?? ''} ${a.cur ?? ''}`}</b>
                       </button>
                     ))}
+                    {!live && (
+                      <div style={{ borderTop: '1px solid #2a303a', margin: '6px 0 0', padding: '10px 12px' }} onClick={e => e.stopPropagation()}>
+                        <div style={{ fontSize: 12, color: '#8b95a5', marginBottom: 6 }}>💰 Set virtual balance (USD)</div>
+                        {editingCap ? (
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <input autoFocus type="number" min="0.01" step="0.01" value={capInput}
+                              onChange={e => setCapInput(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') saveCap(); if (e.key === 'Escape') setEditingCap(false) }}
+                              style={{ flex: 1, padding: '5px 8px', fontSize: 14, fontWeight: 700, background: '#0e1116', color: '#fff', border: '1px solid #2a9df4', borderRadius: 6 }} />
+                            <button onClick={saveCap} style={{ padding: '5px 10px', borderRadius: 6, border: 0, background: '#2a9df4', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>✓ Set</button>
+                            <button onClick={() => setEditingCap(false)} style={{ padding: '5px 8px', borderRadius: 6, border: 0, background: '#333', color: '#aaa', cursor: 'pointer' }}>✕</button>
+                          </div>
+                        ) : (
+                          <button onClick={openCapEdit} style={{ width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: '1px dashed #2a303a', background: 'transparent', color: customCap != null ? '#fff' : '#5d6878', cursor: 'pointer', fontSize: 13 }}>
+                            {customCap != null ? `$${fmtUSD(customCap)} ✏️ (click to change)` : '+ Set virtual starting balance'}
+                          </button>
+                        )}
+                        {customCap != null && (
+                          <div style={{ marginTop: 6, fontSize: 11, color: '#5d6878' }}>
+                            Real: {balance || '…'} · <span style={{ color: '#8b95a5', cursor: 'pointer', textDecoration: 'underline' }} onClick={clearCap}>Reset to real</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div> : <span className="conn">Connecting…</span>}
