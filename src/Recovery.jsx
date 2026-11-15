@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { AccountBar } from './deriv.jsx'
 
 const PUB = 'wss://api.derivws.com/trading/v1/options/ws/public' // market data, no login needed
 const APP_ID = import.meta.env.VITE_DERIV_APP_ID
@@ -810,39 +811,7 @@ export default function App({ tabs }) {
           <img src="/logo.png" alt="" className="blogo" onError={e => { e.currentTarget.style.display = 'none' }} />
           <span className="by">By TradeXpertz</span>
         </div>
-        <div className="topright" onClick={e => e.stopPropagation()}>
-          {!tok ? (
-            <>
-              <button className="pill" onClick={() => login(false)}>Log in</button>
-              <button className="pill red" onClick={() => login(true)}>Sign up</button>
-            </>
-          ) : (
-            <>
-              {acct ? <div className="acctwrap">
-                <button className="acct" onClick={() => setMenu(m => !m)}>
-                  <span className="acctin">
-                    <span className={'alab ' + (live ? 'real' : 'demo')}>{live ? 'Real account' : 'Demo account'}</span>
-                    <b>{balance || '...'}</b>
-                  </span>
-                  <span className="chev">⌄</span>
-                </button>
-                {menu && (
-                  <div className="menu">
-                    {accts.map(a => (
-                      <button key={a.id} className={'mi' + (a.id === acct?.id ? ' sel' : '')} onClick={() => { setMenu(false); useAccount(a, tok) }}>
-                        <span className={a.demo ? 'demo' : 'real'}>{a.demo ? 'Demo' : 'Real'}</span>
-                        <span>{a.id}</span>
-                        <b>{a.id === acct?.id ? balance : `${a.bal ?? ''} ${a.cur ?? ''}`}</b>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div> : <span className="conn">Connecting…</span>}
-              {fail && <button className="pill" onClick={retryNow}>⟳ Retry</button>}
-              <button className="pill" onClick={logout}>Log out</button>
-            </>
-          )}
-        </div>
+        <AccountBar d={{ acct, accts, balance, fail, ready, menu, setMenu, live, cur: { current: 'USD' }, login, logout, selectAccount: useAccount, retryNow }} />
       </header>
       {tabs}
 

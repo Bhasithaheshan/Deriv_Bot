@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { analyzeMarket, summarize, loadTicks } from './testerCore.js'
+import { AccountBar, store, useDeriv } from './deriv.jsx'
 
 const PUB = 'wss://api.derivws.com/trading/v1/options/ws/public'
 const MARKETS = [
@@ -49,6 +50,7 @@ function Equity({ row, payout, capital, stake }) {
 }
 
 export default function Tester({ tabs, seed, demoBalance }) { // `seed` (optional) = preloaded ticks, used by tests
+  const dv = useDeriv(() => {}) // lightweight login hook — just for AccountBar
   const [sel, setSel] = useState(seed ? Object.keys(seed) : ['1HZ100V'])
   const [total, setTotal] = useState(5000)
   const [N, setN] = useState(5)
@@ -110,7 +112,7 @@ export default function Tester({ tabs, seed, demoBalance }) { // `seed` (optiona
 
   return (
     <div>
-      <header className="top"><div className="brand"><img src="/logo.png" alt="" className="blogo" onError={e => { e.currentTarget.style.display = 'none' }} /><span className="by">By TradeXpertz</span></div></header>
+      <header className="top"><div className="brand"><img src="/logo.png" alt="" className="blogo" onError={e => { e.currentTarget.style.display = 'none' }} /><span className="by">By TradeXpertz</span></div><AccountBar d={dv} /></header>
       {tabs}
       <div className="tester">
         <div className="card">
