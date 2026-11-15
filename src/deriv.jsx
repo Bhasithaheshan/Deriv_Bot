@@ -144,6 +144,31 @@ export function useDeriv(addLog) {
 // right-hand part of the header: Log in / Sign up, or the account pill + Log out
 export function AccountBar({ d }) {
   const tok = store.get('tok')
+  const [editingCap, setEditingCap] = useState(false)
+  const [capInput, setCapInput] = useState('')
+
+  // Load saved custom capital from localStorage
+  const savedCap = store.get('customCapital')
+  const customCap = savedCap ? parseFloat(savedCap) : null
+
+  // Current live balance as a number
+  const liveBal = d.balance ? parseFloat(d.balance) : null
+
+  // P&L relative to custom capital
+  const pnl = (customCap != null && liveBal != null) ? liveBal - customCap : null
+
+  const openEdit = e => {
+    e.stopPropagation()
+    setCapInput(customCap != null ? String(customCap) : (liveBal != null ? String(liveBal) : '10000'))
+    setEditingCap(true)
+  }
+  const saveCap = () => {
+    const v = parseFloat(capInput)
+    if (!isNaN(v) && v > 0) store.set('customCapital', String(v))
+    setEditingCap(false)
+  }
+  const clearCap = e => { e.stopPropagation(); store.del('customCapital'); setEditingCap(false) }
+
   return (
     <div className="topright" onClick={e => e.stopPropagation()}>
       {!tok ? (
@@ -159,6 +184,12 @@ export function AccountBar({ d }) {
                 <span className="acctin">
                   <span className={'alab ' + (d.live ? 'real' : 'demo')}>{d.live ? 'Real account' : 'Demo account'}</span>
                   <b>{d.balance || '...'}</b>
+                  {/* Capital & P&L row — only for demo */}
+                  {!d.live && customCap != null && pnl != null && (
+                    <span style={{ fontSize: 11, color: pnl >= 0 ? '#2ecc71' : '#ff5555', marginTop: 1 }}>
+                      Cap: ${customCap.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} · P&L: {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                    </span>
+                  )}
                 </span>
                 <span className="chev">⌄</span>
               </button>
@@ -171,6 +202,30 @@ export function AccountBar({ d }) {
                       <b>{a.id === d.acct?.id ? d.balance : `${a.bal ?? ''} ${a.cur ?? ''}`}</b>
                     </button>
                   ))}
+                  {/* Custom capital editor — demo only */}
+                  {!d.live && (
+                    <div style={{ borderTop: '1px solid #2a303a', margin: '6px 0 0', padding: '10px 12px' }} onClick={e => e.stopPropagation()}>
+                      <div style={{ fontSize: 12, color: '#8b95a5', marginBottom: 6 }}>💰 Starting Capital (USD)</div>
+                      {editingCap ? (
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <input
+                            autoFocus
+                            type="number" min="1" step="0.01"
+                            value={capInput}
+                            onChange={e => setCapInput(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveCap(); if (e.key === 'Escape') setEditingCap(false) }}
+                            style={{ flex: 1, padding: '5px 8px', fontSize: 14, fontWeight: 700, background: '#0e1116', color: '#fff', border: '1px solid #2a9df4', borderRadius: 6 }}
+                          />
+                          <button onClick={saveCap} style={{ padding: '5px 10px', borderRadius: 6, border: 0, background: '#2a9df4', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>✓</button>
+                          <button onClick={clearCap} style={{ padding: '5px 8px', borderRadius: 6, border: 0, background: '#333', color: '#aaa', cursor: 'pointer' }}>✕</button>
+                        </div>
+                      ) : (
+                        <button onClick={openEdit} style={{ width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: '1px dashed #2a303a', background: 'transparent', color: customCap != null ? '#fff' : '#5d6878', cursor: 'pointer', fontSize: 13 }}>
+                          {customCap != null ? `$${customCap.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} ✏️` : '+ Set starting capital'}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
