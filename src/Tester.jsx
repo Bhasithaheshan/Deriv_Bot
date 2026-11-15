@@ -48,7 +48,7 @@ function Equity({ row, payout, capital, stake }) {
   )
 }
 
-export default function Tester({ tabs, seed }) { // `seed` (optional) = preloaded ticks, used by tests
+export default function Tester({ tabs, seed, demoBalance }) { // `seed` (optional) = preloaded ticks, used by tests
   const [sel, setSel] = useState(seed ? Object.keys(seed) : ['1HZ100V'])
   const [total, setTotal] = useState(5000)
   const [N, setN] = useState(5)
@@ -61,7 +61,7 @@ export default function Tester({ tabs, seed }) { // `seed` (optional) = preloade
   const [status, setStatus] = useState('')
   const [err, setErr] = useState('')
   const [ver, setVer] = useState(0)
-  const [capital, setCapital] = useState(10000)
+  const [capital, setCapital] = useState(() => demoBalance ?? 10000)
   const [stake, setStake] = useState(1)
   const data = useRef(seed || {})
   const reqId = useRef(100)
