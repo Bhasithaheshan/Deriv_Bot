@@ -183,7 +183,17 @@ export class DiffersEngine {
   }
   onTick(sy) { // called by the feed for every live tick of every market
     const rec = this.rec
-    if (this.phase !== 'running' || !rec || rec.stage !== 'wait' || rec.sym !== sy) return
+    if (this.phase !== 'running' || !rec) return
+    // Handle 20-tick wait before next recovery step
+    if (rec.stage === 'tickwait' && sy === rec.waitSym) {
+      rec.ticksLeft--
+      const done = 20 - rec.ticksLeft
+      if (done % 5 === 0 || rec.ticksLeft === 0) this.log(`⏳ Waiting before recovery step ${rec.step}… (${done}/20 ticks)`)
+      this.emit()
+      if (rec.ticksLeft <= 0) { rec.stage = null; this._recPlace() }
+      return
+    }
+    if (rec.stage !== 'wait' || rec.sym !== sy) return
     if (this._run(rec.kind, sy) >= this.plan.rec.need || !this.plan.rec.needOn) { rec.go = true; this._fire() }
     this.emit()
   }
@@ -213,7 +223,10 @@ export class DiffersEngine {
     }
     if (this.plan.sl > 0 && this.pnl <= -this.plan.sl) return this._finish(`⛔ Stop loss reached during recovery (${this.pnl.toFixed(2)}) — session ended. Debt ≈ ${rec.debt.toFixed(2)}`)
     rec.stake = profit > 0 ? r2(c.mult * rec.debt) : r2(rec.stake * c.mult); rec.step++
-    this._recPlace()
+    // Wait 20 ticks before placing the next recovery step
+    rec.stage = 'tickwait'; rec.ticksLeft = 20; rec.waitSym = rec.sym || this.allSyms[0]
+    this.log(`⏳ Waiting 20 ticks before recovery step ${rec.step}… (0/20)`)
+    this.emit()
   }
 
   statusText() {
@@ -221,6 +234,7 @@ export class DiffersEngine {
     if (this.phase === 'done') return this.reason
     if (this.rec) {
       const r = this.rec
+      if (r.stage === 'tickwait') return `Recovery step ${r.step}/${this.plan.rec.steps} · waiting ${20 - r.ticksLeft}/20 ticks before next step…`
       return r.stage === 'wait' ? `Recovery step ${r.step}/${this.plan.rec.steps} · watching ${r.name} (${(r.idx || 0) + 1}/${(r.order || []).length}) for ${this.plan.rec.need} ${KIND[r.kind].word} digits in a row`
         : `Recovery step ${r.step}/${this.plan.rec.steps} · ${KIND[r.kind].label} ${r.stage === 'open' ? 'running' : 'buying'} on ${r.name}`
     }
