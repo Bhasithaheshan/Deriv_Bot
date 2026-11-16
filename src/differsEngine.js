@@ -10,14 +10,29 @@ export const KIND = {
   under: { type: 'DIGITUNDER', barrier: '7', label: 'Under 7', dig: '7-8-9', word: 'high' },
 }
 
-// digits = last 100 digits (0-9). Returns the digit that appeared least; ties -> the one not seen for the longest time.
+// digits = last N digits (0-9).
+// Score combines: lowest frequency (%) + longest consecutive absence (ticks since last seen).
+// score(d) = frequency_weight * (count/n) + absence_weight * (ticksSinceSeen/n)  — lower is better for frequency, higher is better for absence
+// Final rank: lowest combined score wins → digit least frequent AND unseen longest.
 export const pickDigit = digits => {
-  const counts = new Array(10).fill(0), seen = new Array(10).fill(-1)
-  digits.forEach((d, i) => { counts[d]++; seen[d] = i })
-  const min = Math.min(...counts)
-  let best = -1
-  for (let d = 0; d < 10; d++) if (counts[d] === min && (best < 0 || seen[d] < seen[best])) best = d
-  return { digit: best, share: min / digits.length, counts }
+  const n = digits.length
+  const counts = new Array(10).fill(0)
+  const lastSeen = new Array(10).fill(-1) // index of last occurrence (higher = more recent)
+  digits.forEach((d, i) => { counts[d]++; lastSeen[d] = i })
+  // absence = ticks since last seen (higher = longer absence = better for Differs)
+  const absence = lastSeen.map(i => i < 0 ? n : n - 1 - i)
+  // Normalise both metrics to [0,1] then compute combined score
+  // For frequency: lower count = better → use count/n directly (want to minimise)
+  // For absence: higher absence = better → use (n - absence)/n (want to minimise)
+  const maxAbsence = Math.max(...absence) || 1
+  const scores = Array.from({ length: 10 }, (_, d) => {
+    const freqScore = counts[d] / n               // 0=best, 1=worst
+    const absScore  = 1 - absence[d] / maxAbsence // 0=best (longest absent), 1=worst
+    return freqScore * 0.6 + absScore * 0.4       // 60% weight on frequency, 40% on absence
+  })
+  let best = 0
+  for (let d = 1; d < 10; d++) if (scores[d] < scores[best]) best = d
+  return { digit: best, share: counts[best] / n, counts, absence, scores }
 }
 
 // cfg: { runs, ticks[], markets[], stake, tp, sl, rec:{on, mult, steps, maxStake, need, needOn, watch, digN} }
@@ -81,7 +96,8 @@ export class DiffersEngine {
     }
     const pk = pickDigit(digits)
     row.digit = pk.digit; row.share = pk.share; this.stage = 'prop'
-    this.log(`🎯 Run ${this.idx + 1}/${this.plan.runs.length}: ${this.name(run.sy)} · Differs ${pk.digit} (${Math.round(pk.share * 100)}% in the last 30 ticks) · ${run.ticks} ticks · stake ${this.plan.stake}`)
+    const absenceTicks = pk.absence ? pk.absence[pk.digit] : '?'
+    this.log(`🎯 Run ${this.idx + 1}/${this.plan.runs.length}: ${this.name(run.sy)} · Differs ${pk.digit} (${Math.round(pk.share * 100)}% freq · absent ${absenceTicks} ticks) · ${run.ticks} ticks · stake ${this.plan.stake}`)
     this.send({ proposal: 1, amount: this.plan.stake, basis: 'stake', contract_type: 'DIGITDIFF', barrier: String(pk.digit), duration: run.ticks, duration_unit: 't', currency: this.cur(), underlying_symbol: run.sy, req_id: REQ.RUN_PROP })
     this._watch(20000, `⚠️ No quote from Deriv for run ${this.idx + 1} — session stopped`)
     this.emit()
@@ -161,12 +177,24 @@ export class DiffersEngine {
     if (rec.stake > c.maxStake) return this._finish(`⛔ Recovery stake ${rec.stake.toFixed(2)} is above the cap (${c.maxStake}) — session stopped. Debt ≈ ${rec.debt.toFixed(2)}`)
     rec.kind = rec.step % 2 === 1 ? 'over' : 'under'; const K = KIND[rec.kind]
     const share = sy => (rec.kind === 'under' ? this.feed.p789(sy, c.digN) : this.feed.p012(sy, c.digN))
-    const all = this.allSyms.map(sy => ({ sy, name: this.name(sy), p: share(sy) })).filter(x => x.p != null).sort((a, b) => a.p - b.p) // fewest digits of the group first
-    let order = all.filter(x => !rec.used.includes(x.sy)) // never a market used by an earlier step
-    if (!order.length) { rec.used = []; order = all } // every market used: start over
+    // Idea 4: Score each market by combining historical % + live pattern already forming
+    // liveRun = digits already in a row right now (higher = closer to trigger = better)
+    const all = this.allSyms.map(sy => {
+      const p = share(sy)
+      if (p == null) return null
+      const liveRun = this._run(rec.kind, sy) // current consecutive digits in a row
+      // Combined score: lower historical % = better (fewer target digits historically)
+      //                 higher liveRun = better (pattern already forming now)
+      // Normalise liveRun: subtract it from p so markets with pattern already forming rank higher
+      const patternBonus = liveRun * 0.015 // each digit already in row reduces effective p by 1.5%
+      const score = p - patternBonus
+      return { sy, name: this.name(sy), p, liveRun, score }
+    }).filter(Boolean).sort((a, b) => a.score - b.score) // best score first
+    let order = all.filter(x => !rec.used.includes(x.sy))
+    if (!order.length) { rec.used = []; order = all }
     if (!order.length) return this._finish('⚠️ No digit statistics yet for recovery — session stopped')
     rec.order = order; rec.stage = 'wait'; rec.fails = 0; rec.go = false; rec.q = null; rec.subId = null
-    this.log(`🎲 Recovery step ${rec.step}: ${K.label} stake ${rec.stake.toFixed(2)} — need ${c.need} ${K.word} digits (${K.dig}) in a row, ${c.watch} min per market, new market each step, order: ${order.map(o => `${o.name.replace(' Index', '')} ${(o.p * 100).toFixed(0)}%`).join(' → ')}`)
+    this.log(`🎲 Recovery step ${rec.step}: ${K.label} stake ${rec.stake.toFixed(2)} — need ${c.need} ${K.word} digits (${K.dig}) in a row, order: ${order.map(o => `${o.name.replace(' Index', '')} ${(o.p * 100).toFixed(0)}% [${o.liveRun} in row]`).join(' → ')}`)
     this._watch(this._recWaitMs(), () => this._noPattern())
     this._focus(0)
   }
