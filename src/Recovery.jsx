@@ -811,10 +811,11 @@ export default function App({ tabs }) {
   const balOffset = savedOffset != null ? parseFloat(savedOffset) : null
   const customCap = store.get('customCapital') != null ? parseFloat(store.get('customCapital')) : null
   const liveBal = balance ? parseFloat(balance) : null
-  const virtualBal = (balOffset != null && liveBal != null) ? liveBal + balOffset : null
+  // Virtual balance — DEMO accounts only. Real account always shows real balance.
+  const virtualBal = (!live && balOffset != null && liveBal != null) ? liveBal + balOffset : null
   const fmtUSD = v => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const displayBal = virtualBal != null ? `${fmtUSD(virtualBal)} USD` : (balance || '...')
-  const capPnl = (virtualBal != null && customCap != null) ? virtualBal - customCap : null
+  const capPnl = (!live && virtualBal != null && customCap != null) ? virtualBal - customCap : null
   const openCapEdit = e => { e.stopPropagation(); setCapInput(customCap != null ? String(customCap) : (liveBal != null ? String(Math.round(liveBal)) : '10000')); setEditingCap(true) }
   const saveCap = () => { const v = parseFloat(capInput); if (!isNaN(v) && v > 0 && liveBal != null) { const off = v - liveBal; store.set('customCapital', String(v)); store.set('balanceOffset', String(off)); forceCapUpdate(n => n + 1) }; setEditingCap(false) }
   const clearCap = e => { e.stopPropagation(); store.del('customCapital'); store.del('balanceOffset'); setEditingCap(false); forceCapUpdate(n => n + 1) }

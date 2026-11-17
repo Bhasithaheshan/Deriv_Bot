@@ -157,15 +157,15 @@ export function AccountBar({ d }) {
   // Current live real balance as number
   const liveBal = d.balance ? parseFloat(d.balance) : null
 
-  // Virtual display balance = real + offset (live updates as Deriv sends balance events)
-  const virtualBal = (offset != null && liveBal != null) ? liveBal + offset : null
+  // Virtual display balance — DEMO accounts only. Real account always shows real balance.
+  const virtualBal = (!d.live && offset != null && liveBal != null) ? liveBal + offset : null
 
   // Format for display
   const fmtUSD = v => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const displayBal = virtualBal != null ? `${fmtUSD(virtualBal)} USD` : (d.balance || '...')
 
-  // P&L = virtualBal - customCap
-  const pnl = (virtualBal != null && customCap != null) ? virtualBal - customCap : null
+  // P&L = virtualBal - customCap (demo only)
+  const pnl = (!d.live && virtualBal != null && customCap != null) ? virtualBal - customCap : null
 
   const openEdit = e => {
     e.stopPropagation()
