@@ -12,6 +12,32 @@ const loadCfg = () => {
 }
 const money = v => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(2)}`
 
+// ── Feature H: Trade history ──────────────────────────────────────────────────
+const HIST_KEY = 'diffTradeHistory'
+const loadHistory = () => { try { return JSON.parse(localStorage.getItem(HIST_KEY) || '[]') } catch { return [] } }
+const saveHistory = h => { try { localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(-500))) } catch { /* ignore */ } }
+const addTradeToHistory = (sy, digit, win, profit) => {
+  const h = loadHistory()
+  h.push({ ts: Date.now(), hour: new Date().getHours(), sy, digit, win, profit })
+  saveHistory(h)
+}
+
+// ── Feature I: Digit heatmap colour ──────────────────────────────────────────
+// pct = frequency 0..1 (low = cold/good for Differs, high = hot/bad)
+const heatColour = pct => {
+  const stops = [[0, [42,165,110]], [0.4, [60,120,200]], [0.7, [220,140,30]], [1, [220,50,50]]]
+  let [r,g,b] = stops[0][1]
+  for (let i = 1; i < stops.length; i++) {
+    if (pct <= stops[i][0]) {
+      const t = (pct - stops[i-1][0]) / (stops[i][0] - stops[i-1][0])
+      const [r0,g0,b0] = stops[i-1][1], [r1,g1,b1] = stops[i][1]
+      r = r0+(r1-r0)*t; g = g0+(g1-g0)*t; b = b0+(b1-b0)*t; break
+    }
+    ;[r,g,b] = stops[i][1]
+  }
+  return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`
+}
+
 export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase, snap}, used by tests
   const [cfg, setCfg] = useState(loadCfg)
   const [phase, setPhase] = useState(seed?.phase || 'setup') // setup -> run
@@ -39,7 +65,17 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
   const problem = !dv.acct ? 'Log in first (top right)' : !dv.ready ? 'Connecting to your account…' : !cfg.mk.length ? 'Select at least one market' : !(+cfg.stake >= 0.35) ? 'Stake must be at least 0.35' : ''
 
   const launch = pl => {
-    const e = new DiffersEngine({ send: dv.send, feed, log: addLog, emit: () => setSnap(e.snapshot()), cur: () => dv.cur.current, names: NAME, allSyms: SYMS })
+    const e = new DiffersEngine({ send: dv.send, feed, log: addLog, emit: () => {
+      // Feature H: record completed trades into history
+      const s = e.snapshot()
+      s.rows.forEach(r => {
+        if ((r.status === 'win' || r.status === 'loss') && r.profit != null && !r._recorded) {
+          r._recorded = true
+          addTradeToHistory(r.sy, r.digit, r.status === 'win', r.profit)
+        }
+      })
+      setSnap(s)
+    }, cur: () => dv.cur.current, names: NAME, allSyms: SYMS })
     eng.current = e; setLog([]); setPhase('run'); e.start(pl)
   }
   const start = () => {
@@ -239,6 +275,103 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                     <div className="tnote muted" style={{ marginBottom: 8 }}>Digits in the last 30 ticks · {SHORT(cur.sy)} (the lowest share is the Differs digit)</div>
                     <div className="dbars">
                       {counts.map((c, d) => <div key={d} className={'dbar' + (c === min ? ' min' : '')}><i style={{ height: `${Math.min(100, c * (100/30 * 3))}%` }} /><b>{d}</b><span>{Math.round(c/30*100)}%</span></div>)}
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* ── Feature I: Digit Heatmap (all markets, last 50 ticks) ── */}
+              {(() => {
+                const rows = SYMS.map(sy => {
+                  const dg = feed.lastDigits(sy, 50)
+                  if (!dg) return null
+                  const counts = new Array(10).fill(0); dg.forEach(d => counts[d]++)
+                  const max = Math.max(...counts) || 1
+                  return { sy, counts, max }
+                }).filter(Boolean)
+                if (!rows.length) return null
+                return (
+                  <div className="card">
+                    <div className="tnote muted" style={{ marginBottom: 10 }}>🌡️ Digit Heatmap — last 50 ticks per market <span style={{ fontSize: 11 }}>(🟢 cold = good Differs · 🔴 hot = avoid)</span></div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'left', color: '#8b95a5', fontWeight: 400, padding: '2px 6px' }}>Market</th>
+                            {[0,1,2,3,4,5,6,7,8,9].map(d => <th key={d} style={{ textAlign: 'center', color: '#8b95a5', fontWeight: 400, width: 36 }}>{d}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map(({ sy, counts, max }) => (
+                            <tr key={sy}>
+                              <td style={{ color: '#aaa', padding: '3px 6px', whiteSpace: 'nowrap' }}>{SHORT(sy)}</td>
+                              {counts.map((c, d) => {
+                                const pct = c / max
+                                const bg = heatColour(pct)
+                                const freq = Math.round(c / 50 * 100)
+                                return (
+                                  <td key={d} title={`Digit ${d}: ${freq}%`}
+                                    style={{ textAlign: 'center', padding: '3px 2px' }}>
+                                    <div style={{
+                                      background: bg, borderRadius: 5, padding: '3px 0',
+                                      fontWeight: 700, fontSize: 11, color: '#fff',
+                                      minWidth: 28, textShadow: '0 1px 2px rgba(0,0,0,0.5)'
+                                    }}>{freq}%</div>
+                                  </td>
+                                )
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* ── Feature H: Best Hour Analysis ── */}
+              {(() => {
+                const hist = loadHistory()
+                if (hist.length < 3) return null
+                const byHour = Array.from({ length: 24 }, (_, h) => {
+                  const trades = hist.filter(t => t.hour === h)
+                  if (!trades.length) return null
+                  const wins = trades.filter(t => t.win).length
+                  return { h, n: trades.length, wins, rate: wins / trades.length, pnl: trades.reduce((s, t) => s + t.profit, 0) }
+                }).filter(Boolean)
+                if (!byHour.length) return null
+                const bestRate = Math.max(...byHour.map(x => x.rate))
+                const curHour = new Date().getHours()
+                return (
+                  <div className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                      <div className="tnote muted" style={{ margin: 0 }}>⏰ Best trading hours <span style={{ fontSize: 11 }}>({hist.length} trades logged)</span></div>
+                      <button onClick={() => { if (confirm('Clear all trade history?')) { localStorage.removeItem(HIST_KEY) } }}
+                        style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, border: '1px solid #333', background: 'transparent', color: '#666', cursor: 'pointer' }}>Clear</button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {byHour.map(({ h, n, wins, rate, pnl }) => {
+                        const isBest = rate === bestRate && n >= 3
+                        const isCur = h === curHour
+                        const col = rate >= 0.7 ? '#2ecc71' : rate >= 0.5 ? '#f1c40f' : '#e74c3c'
+                        return (
+                          <div key={h} title={`${h}:00 — ${wins}W/${n-wins}L (${Math.round(rate*100)}%) P/L ${pnl>=0?'+':''}${pnl.toFixed(2)}`}
+                            style={{
+                              textAlign: 'center', borderRadius: 6, padding: '5px 6px', minWidth: 44,
+                              background: isCur ? '#1a2436' : '#13171f',
+                              border: `1px solid ${isBest ? '#2ecc71' : isCur ? '#2a9df4' : '#1e242e'}`,
+                              cursor: 'default'
+                            }}>
+                            <div style={{ fontSize: 10, color: '#5d6878' }}>{h}h</div>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: col }}>{Math.round(rate*100)}%</div>
+                            <div style={{ fontSize: 10, color: '#5d6878' }}>{n}t</div>
+                            {isBest && <div style={{ fontSize: 9, color: '#2ecc71' }}>★</div>}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 11, color: '#5d6878' }}>
+                      Hover for details · ★ = best win rate · blue border = current hour · 🟢≥70% 🟡≥50% 🔴&lt;50%
                     </div>
                   </div>
                 )
