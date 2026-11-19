@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AccountBar, useDeriv } from './deriv.jsx'
 import { useDigitFeed } from './digitFeed.js'
 import { DiffersEngine, buildPlan, pickDigit } from './differsEngine.js'
@@ -12,7 +12,7 @@ const loadCfg = () => {
 }
 const money = v => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(2)}`
 
-// â”€â”€ Feature H: Trade history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Feature H: Trade history ──────────────────────────────────────────────────
 const HIST_KEY = 'diffTradeHistory'
 const loadHistory = () => { try { return JSON.parse(localStorage.getItem(HIST_KEY) || '[]') } catch { return [] } }
 const saveHistory = h => { try { localStorage.setItem(HIST_KEY, JSON.stringify(h.slice(-500))) } catch { /* ignore */ } }
@@ -22,7 +22,7 @@ const addTradeToHistory = (sy, digit, win, profit) => {
   saveHistory(h)
 }
 
-// â”€â”€ Feature I: Digit heatmap colour â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Feature I: Digit heatmap colour ──────────────────────────────────────────
 // pct = frequency 0..1 (low = cold/good for Differs, high = hot/bad)
 const heatColour = pct => {
   const stops = [[0, [42,165,110]], [0.4, [60,120,200]], [0.7, [220,140,30]], [1, [220,50,50]]]
@@ -51,7 +51,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
 
   useEffect(() => {
     dv.setOnMessage(m => eng.current?.onMessage(m))
-    dv.setOnClose(() => { if (eng.current?.phase === 'running') eng.current.stop('âš ï¸ Trading connection lost â€” session stopped') })
+    dv.setOnClose(() => { if (eng.current?.phase === 'running') eng.current.stop('⚠️ Trading connection lost — session stopped') })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { try { localStorage.setItem('diffCfg', JSON.stringify(cfg)) } catch { /* ignore */ } }, [cfg])
   useEffect(() => { window.__botRunning = snap?.phase === 'running'; return () => { window.__botRunning = false } }, [snap?.phase])
@@ -62,7 +62,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
   const toggleMk = sy => setCfg(c => ({ ...c, mk: SYMS.filter(s => (s === sy ? !c.mk.includes(s) : c.mk.includes(s))) })) // keeps the natural order
 
   const plan = useMemo(() => (cfg.mk.length ? buildPlan({ ...cfg, markets: cfg.mk }) : null), [cfg])
-  const problem = !dv.acct ? 'Log in first (top right)' : !dv.ready ? 'Connecting to your accountâ€¦' : !cfg.mk.length ? 'Select at least one market' : !(+cfg.stake >= 0.35) ? 'Stake must be at least 0.35' : ''
+  const problem = !dv.acct ? 'Log in first (top right)' : !dv.ready ? 'Connecting to your account…' : !cfg.mk.length ? 'Select at least one market' : !(+cfg.stake >= 0.35) ? 'Stake must be at least 0.35' : ''
 
   const launch = pl => {
     const e = new DiffersEngine({ send: dv.send, feed, log: addLog, emit: () => {
@@ -118,14 +118,14 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                   </div>
                   <p className="tnote muted">Each run places ONE Digit Differs contract on ONE market. The session ends after the last run.</p>
 
-                  <h3>DURATION PER RUN (TICKS, 1â€“10)</h3>
+                  <h3>DURATION PER RUN (TICKS, 1–10)</h3>
                   <div className="tickgrid">
                     {Array.from({ length: cfg.runs }, (_, i) => (
                       <div key={i}><label>Run {i + 1}</label><input type="number" min="1" max="10" value={cfg.ticks[i]} onChange={e => setTick(i, e.target.value)} /></div>
                     ))}
                   </div>
 
-                  <h3>MARKETS (ROTATE â€” ONE MARKET PER RUN)</h3>
+                  <h3>MARKETS (ROTATE — ONE MARKET PER RUN)</h3>
                   <div className="mkgrid">
                     {SYMS.map(sy => <label key={sy} className="chk"><input type="checkbox" checked={cfg.mk.includes(sy)} onChange={() => toggleMk(sy)} /> {NAME[sy].replace(' Index', '')}</label>)}
                   </div>
@@ -145,11 +145,11 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                   <div className="seg">
                     <button className={!cfg.rec.on ? 'on' : ''} onClick={() => updRec('on', false)}>Off</button>
                     <button className={cfg.rec.on ? 'on' : ''} onClick={() => updRec('on', true)}>On</button>
-                    <span className="muted segnote">{cfg.rec.on ? 'Loss â†’ recovery: Over 2, then Under 7, then Over 2 â€¦ a different market each step. Recovery trades are not runs.' : 'After a loss the session carries on with the next run.'}</span>
+                    <span className="muted segnote">{cfg.rec.on ? 'Loss → recovery: Over 2, then Under 7, then Over 2 … a different market each step. Recovery trades are not runs.' : 'After a loss the session carries on with the next run.'}</span>
                   </div>
                   {cfg.rec.on && (
                     <div className="g3" style={{ marginTop: 10 }}>
-                      <div><label title="Recovery stake multiplier after each loss (step 1 Over 2, step 2 Under 7, step 3 Over 2 ...)">Recovery stake Ã—</label><input type="number" min="1" step="0.5" value={cfg.rec.mult} onChange={e => updRec('mult', e.target.value)} /></div>
+                      <div><label title="Recovery stake multiplier after each loss (step 1 Over 2, step 2 Under 7, step 3 Over 2 ...)">Recovery stake ×</label><input type="number" min="1" step="0.5" value={cfg.rec.mult} onChange={e => updRec('mult', e.target.value)} /></div>
                       <div><label title="Maximum recovery attempts (alternating Over 2 / Under 7, a different market each step)">Max steps</label><input type="number" min="1" value={cfg.rec.steps} onChange={e => updRec('steps', e.target.value)} /></div>
                       <div><label title="Session stops if the next Over 2 stake would be above this">Max rec. stake ($)</label><input type="number" min="1" value={cfg.rec.maxStake} onChange={e => updRec('maxStake', e.target.value)} /></div>
                       <div><label title="Digits in a row before the recovery trade is bought: 0-1-2 for Over 2 steps, 7-8-9 for Under 7 steps">Digits in a row</label>
@@ -168,8 +168,8 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                     </div>
                   )}
 
-                  <p className="tnote muted" style={{ marginTop: 16 }}>{cfg.runs} runs Â· stake ${(+cfg.stake || 0).toFixed(2)} Â· take profit {+cfg.tp ? '$' + cfg.tp : 'off'} Â· stop loss {+cfg.sl ? '$' + cfg.sl : 'off'} Â· recovery {cfg.rec.on ? 'ON' : 'OFF'}</p>
-                  <button className="cta" style={{ marginTop: 4 }} disabled={!!problem} onClick={start}>â–¶ Start session</button>
+                  <p className="tnote muted" style={{ marginTop: 16 }}>{cfg.runs} runs · stake ${(+cfg.stake || 0).toFixed(2)} · take profit {+cfg.tp ? '$' + cfg.tp : 'off'} · stop loss {+cfg.sl ? '$' + cfg.sl : 'off'} · recovery {cfg.rec.on ? 'ON' : 'OFF'}</p>
+                  <button className="cta" style={{ marginTop: 4 }} disabled={!!problem} onClick={start}>▶ Start session</button>
                   {problem && <p className="tnote muted" style={{ textAlign: 'center', margin: '8px 0 0' }}>{problem}</p>}
                 </div>
                 {log.length > 0 && <div className="card"><div className="log">{log.map((l, i) => <div key={i}>{l}</div>)}</div></div>}
@@ -177,7 +177,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
             </div>
 
             <div className="card">
-              <h3>PLAN <span className="muted" style={{ fontWeight: 400, letterSpacing: 0 }}>Â· the Differs digit is picked at purchase time: the LOWEST share in that market's last 30 ticks</span></h3>
+              <h3>PLAN <span className="muted" style={{ fontWeight: 400, letterSpacing: 0 }}>· the Differs digit is picked at purchase time: the LOWEST share in that market's last 30 ticks</span></h3>
               {plan ? (
                 <div className="plan">
                   {plan.runs.map((r, i) => {
@@ -185,7 +185,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                     return (
                       <div key={i} className="pl">
                         <b>Run {i + 1}</b><span>{SHORT(r.sy)}</span><span className="mono">{r.ticks} ticks</span>
-                        <span className="muted">{pk ? `digit ${pk.digit} (${Math.round(pk.share * 100)}%)` : 'loading ticksâ€¦'}</span>
+                        <span className="muted">{pk ? `digit ${pk.digit} (${Math.round(pk.share * 100)}%)` : 'loading ticks…'}</span>
                       </div>
                     )
                   })}
@@ -193,7 +193,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
               ) : <p className="tnote muted">Select at least one market.</p>}
             </div>
 
-            {/* â”€â”€ Feature I: Digit Heatmap on SETUP page â”€â”€ */}
+            {/* ── Feature I: Digit Heatmap on SETUP page ── */}
             {(() => {
               const rows = SYMS.map(sy => {
                 const dg = feed.lastDigits(sy, 50)
@@ -206,8 +206,8 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
               return (
                 <div className="card">
                   <div className="tnote muted" style={{ marginBottom: 10 }}>
-                    ðŸŒ¡ï¸ Digit Heatmap â€” last 50 ticks per market &nbsp;
-                    <span style={{ fontSize: 11 }}>ðŸŸ¢ cold = good Differs pick &nbsp;Â·&nbsp; ðŸ”´ hot = frequently appearing (avoid)</span>
+                    🌡️ Digit Heatmap — last 50 ticks per market &nbsp;
+                    <span style={{ fontSize: 11 }}>🟢 cold = good Differs pick &nbsp;·&nbsp; 🔴 hot = frequently appearing (avoid)</span>
                   </div>
                   <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -240,7 +240,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
               )
             })()}
 
-            {/* â”€â”€ Feature H: Best Hour Analysis on SETUP page â”€â”€ */}
+            {/* ── Feature H: Best Hour Analysis on SETUP page ── */}
             {(() => {
               const hist = loadHistory()
               const byHour = Array.from({ length: 24 }, (_, h) => {
@@ -257,7 +257,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                 <div className="card">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                     <div className="tnote muted" style={{ margin: 0 }}>
-                      â° Best trading hours
+                      ⏰ Best trading hours
                       {hist.length > 0 && <span style={{ fontSize: 11 }}> &nbsp;({hist.length} trades logged)</span>}
                     </div>
                     {hist.length > 0 && (
@@ -271,13 +271,13 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                     {curData ? (
                       <>
                         <div style={{ fontSize: 13, fontWeight: 700, color: curData.rate >= 0.65 ? '#2ecc71' : curData.rate >= 0.5 ? '#f1c40f' : '#e74c3c' }}>
-                          {curData.rate >= 0.65 ? 'âœ… Good time to trade!' : curData.rate >= 0.5 ? 'âš ï¸ Average â€” trade carefully' : 'ðŸ›‘ Bad hour â€” consider waiting'}
-                          &nbsp; {curHour}:00 Â· {Math.round(curData.rate * 100)}% win rate ({curData.wins}W / {curData.n - curData.wins}L Â· P/L {curData.pnl >= 0 ? '+' : ''}{curData.pnl.toFixed(2)})
+                          {curData.rate >= 0.65 ? '✅ Good time to trade!' : curData.rate >= 0.5 ? '⚠️ Average — trade carefully' : '🛑 Bad hour — consider waiting'}
+                          &nbsp; {curHour}:00 · {Math.round(curData.rate * 100)}% win rate ({curData.wins}W / {curData.n - curData.wins}L · P/L {curData.pnl >= 0 ? '+' : ''}{curData.pnl.toFixed(2)})
                         </div>
                       </>
                     ) : (
                       <div style={{ fontSize: 12, color: '#5d6878' }}>
-                        {hist.length === 0 ? 'ðŸ“Š No trade history yet â€” start trading to build hourly win rate data' : `No trades recorded for hour ${curHour}:00 yet`}
+                        {hist.length === 0 ? '📊 No trade history yet — start trading to build hourly win rate data' : `No trades recorded for hour ${curHour}:00 yet`}
                       </div>
                     )}
                   </div>
@@ -290,18 +290,18 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                           const isCur = h === curHour
                           const col = rate >= 0.65 ? '#2ecc71' : rate >= 0.5 ? '#f1c40f' : '#e74c3c'
                           return (
-                            <div key={h} title={`${h}:00 â€” ${wins}W/${n-wins}L (${Math.round(rate*100)}%) Â· P/L ${pnl>=0?'+':''}${pnl.toFixed(2)}`}
+                            <div key={h} title={`${h}:00 — ${wins}W/${n-wins}L (${Math.round(rate*100)}%) · P/L ${pnl>=0?'+':''}${pnl.toFixed(2)}`}
                               style={{ textAlign: 'center', borderRadius: 6, padding: '5px 6px', minWidth: 44, background: isCur ? '#1a2436' : '#13171f', border: `1px solid ${isBest ? '#2ecc71' : isCur ? '#2a9df4' : '#1e242e'}`, cursor: 'default' }}>
                               <div style={{ fontSize: 10, color: '#5d6878' }}>{h}h</div>
                               <div style={{ fontSize: 13, fontWeight: 700, color: col }}>{Math.round(rate*100)}%</div>
                               <div style={{ fontSize: 10, color: '#5d6878' }}>{n}t</div>
-                              {isBest && <div style={{ fontSize: 9, color: '#2ecc71' }}>â˜…</div>}
+                              {isBest && <div style={{ fontSize: 9, color: '#2ecc71' }}>★</div>}
                             </div>
                           )
                         })}
                       </div>
                       <div style={{ marginTop: 8, fontSize: 11, color: '#5d6878' }}>
-                        Hover for W/L details Â· â˜… = best win rate (â‰¥3 trades) Â· blue = current hour
+                        Hover for W/L details · ★ = best win rate (≥3 trades) · blue = current hour
                       </div>
                     </>
                   )}
@@ -317,9 +317,9 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
               <div className="card">
                 <div className="dh-top">
                   <span className={'chip2 ' + (snap.recOn ? 'cp' : 'cg')}>Recovery {snap.recOn ? 'ON' : 'OFF'}</span>
-                  <span className={'chip2 ' + (running ? 'cok' : 'cg')}>{running ? 'â— Running' : snap.reason.startsWith('âœ…') || snap.reason.startsWith('ðŸŽ¯') ? 'âœ“ Finished' : 'â–  Stopped'}</span>
+                  <span className={'chip2 ' + (running ? 'cok' : 'cg')}>{running ? '● Running' : snap.reason.startsWith('✅') || snap.reason.startsWith('🎯') ? '✓ Finished' : '■ Stopped'}</span>
                   <span className="muted" style={{ fontSize: 12 }}>{dv.acct?.id} {dv.live ? '(REAL)' : '(demo)'}</span>
-                  {running && <span style={{ marginLeft: 'auto' }}><button className="mini" onClick={() => { if (confirm('Stop the session? An open contract stays on Deriv.')) eng.current?.stop('â–  Stopped by you') }}>Stop</button></span>}
+                  {running && <span style={{ marginLeft: 'auto' }}><button className="mini" onClick={() => { if (confirm('Stop the session? An open contract stays on Deriv.')) eng.current?.stop('■ Stopped by you') }}>Stop</button></span>}
                 </div>
                 <div className="dh-status"><b>{snap.status}</b></div>
                 <div className="bar"><i style={{ width: `${snap.total ? (done / snap.total) * 100 : 0}%` }} /></div>
@@ -330,7 +330,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                   <div><span>Losses</span><b className="r">{snap.l}</b></div>
                 </div>
                 {snap.recOn && (Object.keys(snap.recDone).length > 0 || snap.recFail > 0) && (
-                  <div className="tnote muted" style={{ marginTop: 6 }}>ðŸ›  Recovered at {Object.entries(snap.recDone).map(([k, v]) => `step ${k}: ${v}`).join(' Â· ') || 'â€”'}{snap.recFail > 0 ? ` Â· failed: ${snap.recFail}` : ''}</div>
+                  <div className="tnote muted" style={{ marginTop: 6 }}>🛠 Recovered at {Object.entries(snap.recDone).map(([k, v]) => `step ${k}: ${v}`).join(' · ') || '—'}{snap.recFail > 0 ? ` · failed: ${snap.recFail}` : ''}</div>
                 )}
                 {!running && (
                   <div className="rsbtns">
@@ -348,12 +348,12 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                         <span className="dot" />
                         <b>Run {i + 1}</b>
                         <span>{SHORT(r.sy)}</span>
-                        <span className="muted">{r.digit != null ? `Differs ${r.digit} (${Math.round(r.share * 100)}%)` : 'â€”'}</span>
+                        <span className="muted">{r.digit != null ? `Differs ${r.digit} (${Math.round(r.share * 100)}%)` : '—'}</span>
                         <span className="mono">{r.ticks} ticks</span>
                         <span className="res">
                           {r.status === 'win' && <b className="g">WIN {money(r.profit)}</b>}
                           {r.status === 'loss' && <b className="r">LOSS {money(r.profit)}</b>}
-                          {r.status === 'trading' && <b className="amber">TRADINGâ€¦</b>}
+                          {r.status === 'trading' && <b className="amber">TRADING…</b>}
                           {r.status === 'active' && <b className="amber">SEEKING</b>}
                           {r.status === 'skipped' && <span className="muted">skipped</span>}
                           {r.status === 'stopped' && <span className="muted">stopped</span>}
@@ -361,7 +361,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                         </span>
                       </div>
                       {r.recs.map((x, k) => (
-                        <div key={k} className="dr sub"><span /><span className="muted">â†³ recovery {x.step}</span><span>{x.label}</span><span className="muted">{x.name.replace(' Index', '')}</span><span className="mono">stake {x.stake.toFixed(2)}</span><span className="res"><b className={x.profit > 0 ? 'g' : 'r'}>{x.profit > 0 ? 'WIN' : 'LOSS'} {money(x.profit)}</b></span></div>
+                        <div key={k} className="dr sub"><span /><span className="muted">↳ recovery {x.step}</span><span>{x.label}</span><span className="muted">{x.name.replace(' Index', '')}</span><span className="mono">stake {x.stake.toFixed(2)}</span><span className="res"><b className={x.profit > 0 ? 'g' : 'r'}>{x.profit > 0 ? 'WIN' : 'LOSS'} {money(x.profit)}</b></span></div>
                       ))}
                     </div>
                   ))}
@@ -373,9 +373,9 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
               {snap.rec && (
                 <div className="card">
                   <div className="qbadge r" style={{ marginTop: 0 }}>
-                    ðŸ›  Recovery step {snap.rec.step} Â· debt {snap.rec.debt.toFixed(2)} Â· {snap.rec.label} on {snap.rec.name} Â· stake {snap.rec.stake.toFixed(2)}
-                    {snap.rec.stage === 'wait' && <> Â· ðŸ‘€ watching market {snap.rec.pos}/{snap.rec.total} Â· {snap.rec.kind === 'under' ? 'high digits (7-8-9)' : 'low digits (0-1-2)'} in a row: {snap.rec.seq}/{snap.rec.need}</>}
-                    {snap.rec.stage === 'buy' && <> Â· âš¡ buying</>}
+                    🛠 Recovery step {snap.rec.step} · debt {snap.rec.debt.toFixed(2)} · {snap.rec.label} on {snap.rec.name} · stake {snap.rec.stake.toFixed(2)}
+                    {snap.rec.stage === 'wait' && <> · 👀 watching market {snap.rec.pos}/{snap.rec.total} · {snap.rec.kind === 'under' ? 'high digits (7-8-9)' : 'low digits (0-1-2)'} in a row: {snap.rec.seq}/{snap.rec.need}</>}
+                    {snap.rec.stage === 'buy' && <> · âš¡ buying</>}
                     {snap.rec.tape?.length > 0 && <div className="tape">Last digits: {snap.rec.tape.map((d, i) => <b key={i} className={(snap.rec.kind === 'under' ? d >= 7 : d <= 2) ? 'low' : ''}>{d}</b>)}</div>}
                   </div>
                 </div>
@@ -388,7 +388,7 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                 const min = Math.min(...counts)
                 return (
                   <div className="card">
-                    <div className="tnote muted" style={{ marginBottom: 8 }}>Digits in the last 30 ticks Â· {SHORT(cur.sy)} (the lowest share is the Differs digit)</div>
+                    <div className="tnote muted" style={{ marginBottom: 8 }}>Digits in the last 30 ticks · {SHORT(cur.sy)} (the lowest share is the Differs digit)</div>
                     <div className="dbars">
                       {counts.map((c, d) => <div key={d} className={'dbar' + (c === min ? ' min' : '')}><i style={{ height: `${Math.min(100, c * (100/30 * 3))}%` }} /><b>{d}</b><span>{Math.round(c/30*100)}%</span></div>)}
                     </div>
