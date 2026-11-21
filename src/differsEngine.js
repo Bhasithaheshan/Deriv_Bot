@@ -4,6 +4,15 @@
 
 export const REQ = { RUN_PROP: 7001, RUN_BUY: 7002, REC_QUOTE: 7101, REC_BUY: 7102 }
 const r2 = x => Math.round(x * 100) / 100
+// Auto-martingale: exact stake to recover debt in one win.
+// Over 2 / Under 7 on Deriv pay ~70.6% profit per stake (barrier at digit 2/7, 3 of 10 possible outcomes).
+// +5% safety buffer ensures full clearance even with tiny rounding.
+const PAYOUT_RATE = 0.706
+const autoStake = (debt, minStake, maxStake) => {
+  if (debt <= 0) return r2(minStake)
+  const needed = r2((debt / PAYOUT_RATE) * 1.05)   // exact stake + 5% buffer
+  return Math.min(Math.max(needed, r2(minStake)), r2(maxStake))
+}
 // Recovery steps alternate: 1 Over 2 (waits for 0-1-2 digits in a row), 2 Under 7 (waits for 7-8-9), 3 Over 2 ... each step on a different market.
 export const KIND = {
   over: { type: 'DIGITOVER', barrier: '2', label: 'Over 2', dig: '0-1-2', word: 'low' },
@@ -41,7 +50,7 @@ export const buildPlan = cfg => {
   return {
     runs: Array.from({ length: n }, (_, i) => ({ ticks: Math.max(1, Math.min(10, Math.round(+cfg.ticks[i]) || 5)), sy: mk[i % mk.length] })),
     stake: +cfg.stake, tp: +cfg.tp || 0, sl: +cfg.sl || 0,
-    rec: { on: !!cfg.rec.on, mult: +cfg.rec.mult || 3, steps: Math.max(1, +cfg.rec.steps || 3), maxStake: +cfg.rec.maxStake || 30, needOn: cfg.rec.needOn !== false, need: Math.max(1, Math.min(5, +cfg.rec.need || 2)), watch: Math.max(0.1, +cfg.rec.watch || 2), digN: Math.max(100, +cfg.rec.digN || 500) },
+    rec: { on: !!cfg.rec.on, mult: +cfg.rec.mult || 3, steps: Math.max(1, +cfg.rec.steps || 3), maxStake: +cfg.rec.maxStake || 30, needOn: cfg.rec.needOn !== false, need: Math.max(1, Math.min(5, +cfg.rec.need || 2)), watch: Math.max(0.1, +cfg.rec.watch || 2), digN: Math.max(100, +cfg.rec.digN || 500), autoMart: cfg.rec.autoMart !== false },
   }
 }
 
@@ -170,7 +179,13 @@ export class DiffersEngine {
   _run(kind, sy) { return kind === 'under' ? this.feed.highRun(sy) : this.feed.lowRun(sy) } // digits of the wanted group in a row
   _recWaitMs() { const n = (this.rec && this.rec.order ? this.rec.order.length : 5) || 5; return Math.max(5, n * this.plan.rec.watch + 1) * 60000 }
   _noPattern() { return `⏱ No digit pattern within ${Math.round(this._recWaitMs() / 60000)} minutes — session stopped. Debt ≈ ${this.rec ? this.rec.debt.toFixed(2) : '?'}` }
-  _startRecovery(loss, row) { this.rec = { debt: loss, stake: r2(loss * this.plan.rec.mult), step: 1, row, used: [], kind: 'over' }; this._recPlace() }
+  _startRecovery(loss, row) {
+    const c = this.plan.rec
+    const initStake = c.autoMart ? autoStake(loss, this.plan.stake, c.maxStake) : r2(loss * c.mult)
+    this.log('Recovery started: debt $' + loss.toFixed(2) + ' | ' + (c.autoMart ? 'auto-stake $' + initStake.toFixed(2) + ' (covers debt in 1 win)' : 'fixed x' + c.mult + ' stake $' + initStake.toFixed(2)))
+    this.rec = { debt: loss, stake: initStake, step: 1, row, used: [], kind: 'over' }
+    this._recPlace()
+  }
   _recPlace() {
     const c = this.plan.rec, rec = this.rec
     if (rec.step > c.steps) return this._finish(`⛔ Recovery steps limit (${c.steps}) reached — session stopped. Debt ≈ ${rec.debt.toFixed(2)}`)
@@ -250,7 +265,14 @@ export class DiffersEngine {
       this._later(400, () => this._next()); this.emit(); return
     }
     if (this.plan.sl > 0 && this.pnl <= -this.plan.sl) return this._finish(`⛔ Stop loss reached during recovery (${this.pnl.toFixed(2)}) — session ended. Debt ≈ ${rec.debt.toFixed(2)}`)
-    rec.stake = profit > 0 ? r2(c.mult * rec.debt) : r2(rec.stake * c.mult); rec.step++
+    // Calculate next recovery stake
+    if (c.autoMart) {
+      rec.stake = autoStake(rec.debt, this.plan.stake, c.maxStake)
+      this.log('Next recovery stake: $' + rec.stake.toFixed(2) + ' (debt $' + rec.debt.toFixed(2) + ' / 70.6% payout + 5% buffer)')
+    } else {
+      rec.stake = profit > 0 ? r2(c.mult * rec.debt) : r2(rec.stake * c.mult)
+    }
+    rec.step++
     // Wait 20 ticks before placing the next recovery step
     rec.stage = 'tickwait'; rec.ticksLeft = 20; rec.waitSym = rec.sym || this.allSyms[0]
     this.log(`⏳ Waiting 20 ticks before recovery step ${rec.step}… (0/20)`)

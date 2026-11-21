@@ -6,7 +6,7 @@ import { DiffersEngine, buildPlan, pickDigit } from './differsEngine.js'
 const SYMS = ['1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V']
 const NAME = { '1HZ10V': 'Volatility 10 (1s) Index', '1HZ25V': 'Volatility 25 (1s) Index', '1HZ50V': 'Volatility 50 (1s) Index', '1HZ75V': 'Volatility 75 (1s) Index', '1HZ100V': 'Volatility 100 (1s) Index' }
 const SHORT = sy => NAME[sy].replace('Volatility ', 'V').replace(' Index', '')
-const DEF = { runs: 5, ticks: Array(10).fill(5), mk: [...SYMS], stake: 1, tp: 3, sl: 5, rec: { on: false, mult: 3, steps: 3, maxStake: 30, need: 2, needOn: true, watch: 2, digN: 500 } }
+const DEF = { runs: 5, ticks: Array(10).fill(5), mk: [...SYMS], stake: 1, tp: 3, sl: 5, rec: { on: false, mult: 3, steps: 3, maxStake: 30, need: 2, needOn: true, watch: 2, digN: 500, autoMart: true } }
 const loadCfg = () => {
   try { const s = JSON.parse(localStorage.getItem('diffCfg')); return s ? { ...DEF, ...s, ticks: [...(s.ticks || []), ...DEF.ticks].slice(0, 10), rec: { ...DEF.rec, ...(s.rec || {}) } } : DEF } catch { return DEF }
 }
@@ -149,7 +149,21 @@ export default function Differs({ tabs, seed }) { // `seed` (optional) = {phase,
                   </div>
                   {cfg.rec.on && (
                     <div className="g3" style={{ marginTop: 10 }}>
-                      <div><label title="Recovery stake multiplier after each loss (step 1 Over 2, step 2 Under 7, step 3 Over 2 ...)">Recovery stake ×</label><input type="number" min="1" step="0.5" value={cfg.rec.mult} onChange={e => updRec('mult', e.target.value)} /></div>
+                      {/* Auto-Martingale toggle */}
+                      <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: cfg.rec.autoMart ? '#1a3a2a' : '#2a2a2a', borderRadius: 10, border: `1px solid ${cfg.rec.autoMart ? '#1fd15a44' : '#444'}` }}>
+                        <button onClick={() => updRec('autoMart', !cfg.rec.autoMart)} style={{ padding: '4px 12px', borderRadius: 14, border: 0, fontWeight: 700, fontSize: 12, cursor: 'pointer', background: cfg.rec.autoMart ? '#1fd15a' : '#555', color: '#fff', whiteSpace: 'nowrap' }}>
+                          {cfg.rec.autoMart ? 'AUTO' : 'FIXED'}
+                        </button>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: cfg.rec.autoMart ? '#1fd15a' : '#aaa' }}>
+                            {cfg.rec.autoMart ? 'Smart Auto-Martingale (Recommended)' : 'Fixed Multiplier'}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+                            {cfg.rec.autoMart ? 'Calculates the exact stake to recover the full debt in one win (debt / 70.6% payout + 5% buffer). No manual multiplier needed.' : 'Multiplies stake by a fixed number each step. May under- or over-recover.'}
+                          </div>
+                        </div>
+                      </div>
+                      {!cfg.rec.autoMart && <div><label title="Recovery stake multiplier after each loss (step 1 Over 2, step 2 Under 7, step 3 Over 2 ...)">Recovery stake ×</label><input type="number" min="1" step="0.5" value={cfg.rec.mult} onChange={e => updRec('mult', e.target.value)} /></div>}
                       <div><label title="Maximum recovery attempts (alternating Over 2 / Under 7, a different market each step)">Max steps</label><input type="number" min="1" value={cfg.rec.steps} onChange={e => updRec('steps', e.target.value)} /></div>
                       <div><label title="Session stops if the next Over 2 stake would be above this">Max rec. stake ($)</label><input type="number" min="1" value={cfg.rec.maxStake} onChange={e => updRec('maxStake', e.target.value)} /></div>
                       <div><label title="Digits in a row before the recovery trade is bought: 0-1-2 for Over 2 steps, 7-8-9 for Under 7 steps">Digits in a row</label>
