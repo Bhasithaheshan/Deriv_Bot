@@ -4,16 +4,17 @@
 
 export const REQ = { RUN_PROP: 7001, RUN_BUY: 7002, REC_QUOTE: 7101, REC_BUY: 7102 }
 const r2 = x => Math.round(x * 100) / 100
-// Auto-martingale: exact stake to recover debt in one win.
-// Over 2 (digit > 2 = 7/10 chance) and Under 7 (digit < 7 = 7/10 chance) on Deriv
-// pay ~37-39% profit per stake (high win probability = low payout ratio).
-// Observed from live trades: stake $3.70 → profit $1.44 = 38.9% payout rate.
-// We use 0.36 (conservative — slightly below observed) so the stake always over-covers.
-const PAYOUT_RATE = 0.36
+// Auto-martingale: exact stake so ONE WIN clears the full accumulated debt.
+// Over 2 / Under 7 on Deriv pay ~40.45% profit per stake (observed live).
+// Formula: stake = ceil(debt / 0.4045) rounded UP to nearest $0.10
+// Example: debt $1.00 -> stake $2.50 -> profit $1.01 (covers $1 loss)
+//          debt $3.50 -> stake $8.70 -> profit $3.52 (covers $3.50)
+//          debt $12.20 -> stake $30.20 -> profit $12.22 (covers $12.20)
+const PAYOUT_RATE = 0.4045
 const autoStake = (debt, minStake, maxStake) => {
   if (debt <= 0) return r2(minStake)
-  const needed = r2((debt / PAYOUT_RATE) * 1.05)   // exact stake + 5% buffer
-  return Math.min(Math.max(needed, r2(minStake)), r2(maxStake))
+  const ceiled = Math.ceil((debt / PAYOUT_RATE) * 10) / 10  // round UP to nearest $0.10
+  return Math.min(Math.max(ceiled, r2(minStake)), r2(maxStake))
 }
 // Recovery steps alternate: 1 Over 2 (waits for 0-1-2 digits in a row), 2 Under 7 (waits for 7-8-9), 3 Over 2 ... each step on a different market.
 export const KIND = {
