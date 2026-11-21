@@ -5,9 +5,11 @@
 export const REQ = { RUN_PROP: 7001, RUN_BUY: 7002, REC_QUOTE: 7101, REC_BUY: 7102 }
 const r2 = x => Math.round(x * 100) / 100
 // Auto-martingale: exact stake to recover debt in one win.
-// Over 2 / Under 7 on Deriv pay ~70.6% profit per stake (barrier at digit 2/7, 3 of 10 possible outcomes).
-// +5% safety buffer ensures full clearance even with tiny rounding.
-const PAYOUT_RATE = 0.706
+// Over 2 (digit > 2 = 7/10 chance) and Under 7 (digit < 7 = 7/10 chance) on Deriv
+// pay ~37-39% profit per stake (high win probability = low payout ratio).
+// Observed from live trades: stake $3.70 → profit $1.44 = 38.9% payout rate.
+// We use 0.36 (conservative — slightly below observed) so the stake always over-covers.
+const PAYOUT_RATE = 0.36
 const autoStake = (debt, minStake, maxStake) => {
   if (debt <= 0) return r2(minStake)
   const needed = r2((debt / PAYOUT_RATE) * 1.05)   // exact stake + 5% buffer
@@ -257,18 +259,19 @@ export class DiffersEngine {
     this.rows[rec.row].recs.push({ step: rec.step, label: KIND[rec.kind].label, name: rec.name, stake: rec.stake, profit })
     this.log(`${profit > 0 ? '✅ ' : '🔴 '}${KIND[rec.kind].label} ${profit > 0 ? 'WIN' : 'LOSS'}  ${profit >= 0 ? '+' : ''}${profit.toFixed(2)}`)
     if (profit > 0) rec.debt -= profit; else rec.debt += rec.stake
-    if (profit > 0 && rec.debt <= 0.005) { // recovered -> back to the normal runs
+    if (profit > 0 && rec.debt <= 0.005) { // fully recovered → back to the normal runs
       this.recDone[rec.step] = (this.recDone[rec.step] || 0) + 1
-      this.log(`✅ Loss recovered at step ${rec.step} — continuing with the next run`)
+      this.log(`✅ Loss fully recovered at step ${rec.step} — continuing with the next run`)
       this.rec = null
       if (this.plan.tp > 0 && this.pnl >= this.plan.tp) return this._finish(`🎯 Take profit reached (+${this.pnl.toFixed(2)}) — session ended`)
       this._later(400, () => this._next()); this.emit(); return
     }
+    if (profit > 0) this.log(`⚠️ Win profit $${profit.toFixed(2)} only partially covered debt — remaining debt: $${rec.debt.toFixed(2)} — continuing recovery`)
     if (this.plan.sl > 0 && this.pnl <= -this.plan.sl) return this._finish(`⛔ Stop loss reached during recovery (${this.pnl.toFixed(2)}) — session ended. Debt ≈ ${rec.debt.toFixed(2)}`)
-    // Calculate next recovery stake
+    // Calculate next recovery stake — recalculate from REMAINING debt so win fully clears it
     if (c.autoMart) {
       rec.stake = autoStake(rec.debt, this.plan.stake, c.maxStake)
-      this.log('Next recovery stake: $' + rec.stake.toFixed(2) + ' (debt $' + rec.debt.toFixed(2) + ' / 70.6% payout + 5% buffer)')
+      this.log('Next recovery stake: $' + rec.stake.toFixed(2) + ' (remaining debt $' + rec.debt.toFixed(2) + ' / 36% payout + 5% buffer)')
     } else {
       rec.stake = profit > 0 ? r2(c.mult * rec.debt) : r2(rec.stake * c.mult)
     }
