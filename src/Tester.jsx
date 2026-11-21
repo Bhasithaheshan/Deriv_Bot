@@ -48,7 +48,7 @@ function Equity({ row, payout, capital, stake }) {
   )
 }
 
-export default function Tester({ tabs, seed, demoBalance }) { // `seed` (optional) = preloaded ticks, used by tests
+export default function Tester({ tabs, seed, demoBalance, swipeProps = {} }) { // `seed` (optional) = preloaded ticks, used by tests
   const [sel, setSel] = useState(seed ? Object.keys(seed) : ['1HZ100V'])
   const [total, setTotal] = useState(5000)
   const [N, setN] = useState(5)
@@ -109,7 +109,7 @@ export default function Tester({ tabs, seed, demoBalance }) { // `seed` (optiona
   const pickRow = rows.find(r => r.name === pick) || null
 
   return (
-    <div>
+    <div {...swipeProps}>
       <header className="top"><div className="brand"><img src="/logo.png" alt="" className="blogo" onError={e => { e.currentTarget.style.display = 'none' }} /><span className="by">By TradeXpertz</span></div></header>
       {tabs}
       <div className="tester">
